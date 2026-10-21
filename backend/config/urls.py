@@ -1,0 +1,26 @@
+from django.contrib import admin
+from django.urls import include, path
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+
+from apps.common.health import HealthCheckView
+
+urlpatterns = [
+    # Admin
+    path("admin/", admin.site.urls),
+
+    # Health Check (Used by gateway monitors & docker compose)
+    path("api/health/", HealthCheckView.as_view(), name="health"),
+
+    # Authentication & Profile (KSPG Cockpit SSO)
+    path("api/auth/", include("apps.accounts.urls", namespace="accounts")),
+
+    # Master Data
+    path("api/masterdata/", include("apps.masterdata.urls", namespace="masterdata")),
+
+    # RedFlag Domain Module (Scoped under /api/v1/redflag/)
+    path("api/v1/redflag/", include("apps.redflag.urls", namespace="redflag")),
+
+    # OpenAPI Schema & Swagger Documentation
+    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
+]
