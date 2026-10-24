@@ -96,63 +96,58 @@ export default function App() {
     }
   };
 
+  const safeFetchJson = async (url: string) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  };
+
   // Fetch all shopfloor modules data
   const fetchAllData = async () => {
     try {
       setIsLoading(true);
       
-      // Fetch Kaizens
-      const resK = await fetch('/api/kaizens');
-      const dataK = await resK.json();
-      if (dataK.success) setKaizens(dataK.data);
+      const dataK = await safeFetchJson('/api/kaizens');
+      if (dataK?.success && dataK?.data) setKaizens(dataK.data);
 
-      // Fetch Redflags
-      const resR = await fetch('/api/redflags');
-      const dataR = await resR.json();
-      if (dataR.success) setRedFlags(dataR.data);
+      const dataR = await safeFetchJson('/api/redflags');
+      if (dataR?.success && dataR?.data) setRedFlags(dataR.data);
 
-      // Fetch 5S Audits
-      const resF = await fetch('/api/fivesaudits');
-      const dataF = await resF.json();
-      if (dataF.success) setFiveSAudits(dataF.data);
+      const dataF = await safeFetchJson('/api/fivesaudits');
+      if (dataF?.success && dataF?.data) setFiveSAudits(dataF.data);
 
-      // Fetch 5S Red Tags
-      const resRT = await fetch('/api/fives/redtags');
-      const dataRT = await resRT.json();
-      if (dataRT.success) setFiveSRedTags(dataRT.data);
+      const dataRT = await safeFetchJson('/api/fives/redtags');
+      if (dataRT?.success && dataRT?.data) setFiveSRedTags(dataRT.data);
 
-      // Fetch 5S Action Items
-      const resAct = await fetch('/api/fives/actions');
-      const dataAct = await resAct.json();
-      if (dataAct.success) setFiveSActions(dataAct.data);
+      const dataAct = await safeFetchJson('/api/fives/actions');
+      if (dataAct?.success && dataAct?.data) setFiveSActions(dataAct.data);
 
-      // Fetch 5S SOC Logs
-      const resSoc = await fetch('/api/fives/soc');
-      const dataSoc = await resSoc.json();
-      if (dataSoc.success) setFiveSSocLogs(dataSoc.data);
+      const dataSoc = await safeFetchJson('/api/fives/soc');
+      if (dataSoc?.success && dataSoc?.data) setFiveSSocLogs(dataSoc.data);
 
-      // Fetch Safety Incidents
-      const resS = await fetch('/api/safetyincidents');
-      const dataS = await resS.json();
-      if (dataS.success) setSafetyIncidents(dataS.data);
+      const dataS = await safeFetchJson('/api/safetyincidents');
+      if (dataS?.success && dataS?.data) setSafetyIncidents(dataS.data);
 
-      // Fetch PPSRs
-      const resP = await fetch('/api/ppsrreports');
-      const dataP = await resP.json();
-      if (dataP.success) setPpsrReports(dataP.data);
+      const dataP = await safeFetchJson('/api/ppsrreports');
+      if (dataP?.success && dataP?.data) setPpsrReports(dataP.data);
 
-      // Fetch PPSR Meetings
-      const resM = await fetch('/api/ppsrmeetings');
-      const dataM = await resM.json();
-      if (dataM.success) setPpsrMeetings(dataM.data);
+      const dataM = await safeFetchJson('/api/ppsrmeetings');
+      if (dataM?.success && dataM?.data) setPpsrMeetings(dataM.data);
 
-      // Fetch Open Impact Actions
-      const resI = await fetch('/api/impactactions');
-      const dataI = await resI.json();
-      if (dataI.success) setImpactActions(dataI.data);
+      const dataI = await safeFetchJson('/api/impactactions');
+      if (dataI?.success && dataI?.data) setImpactActions(dataI.data);
 
     } catch (err) {
-      console.error('Error loading SFMS data from backend:', err);
+      console.warn('SFMS data sync note:', err);
     } finally {
       setIsLoading(false);
     }

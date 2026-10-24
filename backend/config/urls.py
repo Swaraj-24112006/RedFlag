@@ -17,8 +17,9 @@ urlpatterns = [
     # Master Data
     path("api/masterdata/", include("apps.masterdata.urls", namespace="masterdata")),
 
-    # RedFlag Domain Module (Scoped under /api/v1/redflag/)
-    path("api/v1/redflag/", include("apps.redflag.urls", namespace="redflag")),
+    # RedFlag Domain Module (supports both /api/redflag/v1/ and /api/v1/redflag/)
+    path("api/redflag/v1/", include("apps.redflag.urls", namespace="redflag")),
+    path("api/v1/redflag/", include("apps.redflag.urls")),
 
     # OpenAPI Schema & Swagger Documentation
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
