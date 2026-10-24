@@ -1,5 +1,13 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RedFlag } from '../types';
+import {
+  fetchRedFlags,
+  fetchRedFlagsSummary,
+  exportRedFlagsCsv,
+  RedFlagFilters,
+  RedFlagListItem,
+} from '../api/redflag';
 import CameraModal from './CameraModal';
 import RedFlagActionModal from './RedFlagActionModal';
 import RedFlagPrintSheet from './RedFlagPrintSheet';
@@ -76,17 +84,32 @@ export default function RedFlagSystem({
 
   // Filter & Search states for Master Tracker
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Open' | 'Contained' | 'In-Progress' | 'Under-Sustenance' | 'Closed'>('All');
   const [targetDeptFilter, setTargetDeptFilter] = useState<string>('All');
   const [raisedByDeptFilter, setRaisedByDeptFilter] = useState<string>('All');
   const [severityFilter, setSeverityFilter] = useState<string>('All');
   const [category5MFilter, setCategory5MFilter] = useState<string>('All');
+  const [plantFilter, setPlantFilter] = useState<string>('All');
   const [viewLayout, setViewLayout] = useState<'table' | 'cards'>('table');
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [scopedKpi, setScopedKpi] = useState<boolean>(false);
+  const [isExporting, setIsExporting] = useState<boolean>(false);
 
   // Modals
   const [selectedFlagForAction, setSelectedFlagForAction] = useState<RedFlag | null>(null);
   const [flagToPrint, setFlagToPrint] = useState<RedFlag | null>(null);
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
+
+  // Debounce search term (~300ms)
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
 
   // Handle external deep actions from Sidebar or Dashboard
   React.useEffect(() => {
@@ -99,10 +122,12 @@ export default function RedFlagSystem({
     } else if (initialAction === 'tracker' || initialAction === 'filter-all') {
       setActiveTab('tracker');
       setStatusFilter('All');
+      setPage(1);
       if (onClearInitialAction) onClearInitialAction();
     } else if (initialAction === 'filter-open') {
       setActiveTab('tracker');
       setStatusFilter('Open');
+      setPage(1);
       if (onClearInitialAction) onClearInitialAction();
     } else if (initialAction === 'presentation') {
       setActiveTab('presentation');
@@ -113,74 +138,127 @@ export default function RedFlagSystem({
     }
   }, [initialAction]);
 
-  // Export to CSV function
-  const exportToCSV = () => {
-    const headers = [
-      "Sr No", "Red Flag No", "Raised Date", "Raised By", "Originating Dept", 
-      "Target Dept", "Target Person", "Plant Area", "Station", "Model",
-      "Type", "5M Category", "Severity", "Description", "Quarantined WIP", 
-      "QA Custodian", "Status", "Sustenance Start", "M1 Audit", "M2 Audit", "M3 Audit", "Sustenance Achieved"
-    ];
-
-    const rows = filteredFlags.map((rf, idx) => [
-      rf.srNo || String(idx + 1),
-      rf.redFlagNo || `RF-${idx + 1}`,
-      rf.raisedDate,
-      `"${rf.raisedBy || ''}"`,
-      `"${rf.raisedByDepartment || ''}"`,
-      `"${rf.targetDepartment || rf.responsibleDepartment || ''}"`,
-      `"${rf.targetPerson || ''}"`,
-      `"${rf.lineAreaName}"`,
-      `"${rf.stationName}"`,
-      `"${rf.modelName}"`,
-      rf.redFlagType,
-      rf.category5M || 'Method',
-      `"${rf.severity || ''}"`,
-      `"${(rf.redFlagDescription || '').replace(/"/g, '""')}"`,
-      rf.suspectQtyQuarantined || 0,
-      `"${rf.qaCustodian || 'Suresh Kumar (QA)'}"`,
-      rf.status,
-      rf.sustenanceStartDate || '',
-      rf.month1Check?.status || '',
-      rf.month2Check?.status || '',
-      rf.month3Check?.status || '',
-      rf.sustenanceAchieved ? 'YES' : 'NO'
-    ]);
-
-    const csvContent = [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `SFC_RedFlags_Master_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  // Mapping helpers for API params
+  const mapStatusToApi = (s: string): string | undefined => {
+    if (s === 'Open') return 'OPEN';
+    if (s === 'Contained') return 'CONTAINED';
+    if (s === 'In-Progress') return 'IN_PROGRESS';
+    if (s === 'Under-Sustenance') return 'UNDER_SUSTENANCE';
+    if (s === 'Closed') return 'CLOSED';
+    return undefined;
   };
 
-  // Filtered List calculation for Tracker
-  const filteredFlags = redFlags.filter(rf => {
-    const matchesSearch = 
-      !searchTerm ||
-      rf.redFlagNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rf.redFlagDescription.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (rf.raisedBy && rf.raisedBy.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (rf.targetPerson && rf.targetPerson.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      rf.lineAreaName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rf.stationName.toLowerCase().includes(searchTerm.toLowerCase());
+  const mapSeverityToApi = (sev: string): string | undefined => {
+    if (sev.includes('Critical')) return 'CRITICAL';
+    if (sev.includes('Major')) return 'MAJOR';
+    if (sev.includes('Minor')) return 'MINOR';
+    return undefined;
+  };
 
-    const matchesStatus = 
-      statusFilter === 'All' ? true : 
-      statusFilter === 'Under-Sustenance' ? (rf.status === 'Under-Sustenance' || (rf.sustenanceStartDate && !rf.sustenanceAchieved)) :
-      rf.status === statusFilter;
+  const mapDeptToCode = (dept: string): string | undefined => {
+    if (dept === 'All') return undefined;
+    if (dept === 'Production') return 'PROD';
+    if (dept === 'Quality' || dept === 'Quality / QA') return 'QA';
+    if (dept === 'Maintenance') return 'MAINT';
+    if (dept === 'Tooling & Die') return 'TOOL';
+    if (dept === 'Safety & EHS') return 'EHS';
+    if (dept === 'Logistics & Stores' || dept === 'Stores & Inward') return 'LOG';
+    if (dept === 'Engineering' || dept === 'Engineering / NPE') return 'ENG';
+    if (dept === 'Supplier / Inward') return 'SUPP';
+    return dept;
+  };
 
-    const matchesSeverity = severityFilter === 'All' ? true : (rf.severity === severityFilter);
-    const matches5M = category5MFilter === 'All' ? true : (rf.category5M === category5MFilter);
-    const matchesTargetDept = targetDeptFilter === 'All' ? true : (rf.targetDepartment === targetDeptFilter || rf.responsibleDepartment === targetDeptFilter);
-    const matchesRaisedDept = raisedByDeptFilter === 'All' ? true : (rf.raisedByDepartment === raisedByDeptFilter);
+  const apiFilters: RedFlagFilters = useMemo(() => ({
+    search: debouncedSearch.trim() || undefined,
+    status: mapStatusToApi(statusFilter),
+    targetDepartment: mapDeptToCode(targetDeptFilter),
+    raisedByDepartment: mapDeptToCode(raisedByDeptFilter),
+    category5M: category5MFilter !== 'All' ? category5MFilter.toUpperCase() : undefined,
+    severity: mapSeverityToApi(severityFilter),
+    plant: plantFilter !== 'All' ? plantFilter : undefined,
+    ordering: '-raised_at',
+    page,
+    pageSize,
+  }), [debouncedSearch, statusFilter, targetDeptFilter, raisedByDeptFilter, category5MFilter, severityFilter, plantFilter, page, pageSize]);
 
-    return matchesSearch && matchesStatus && matchesSeverity && matches5M && matchesTargetDept && matchesRaisedDept;
+  // Phase 3: Fetch Flags from API
+  const flagsQuery = useQuery({
+    queryKey: ['redflags', apiFilters],
+    queryFn: () => fetchRedFlags(apiFilters),
+    placeholderData: (previousData) => previousData,
   });
+
+  // Phase 3: Fetch Summary KPIs from API
+  const summaryQuery = useQuery({
+    queryKey: ['redflags-summary', { scoped: scopedKpi, filters: scopedKpi ? apiFilters : {} }],
+    queryFn: () => fetchRedFlagsSummary(scopedKpi, scopedKpi ? apiFilters : {}),
+  });
+
+  // Phase 3: CSV Export via streaming endpoint with Auth header and formula injection protection
+  const handleExportCSV = async () => {
+    try {
+      setIsExporting(true);
+      await exportRedFlagsCsv(apiFilters);
+    } catch (err) {
+      console.error('Failed to export CSV:', err);
+      alert('Error downloading CSV export. Please check connection.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Convert API items to RedFlag format for backwards compatibility with sub-components
+  const apiItemsAsRedFlags: RedFlag[] = useMemo(() => {
+    if (!flagsQuery.data?.results) return [];
+    return flagsQuery.data.results.map((item: RedFlagListItem) => {
+      // Map API status to UI status
+      let uiStatus: RedFlag['status'] = 'Open';
+      if (item.status === 'OPEN') uiStatus = 'Open';
+      else if (item.status === 'CONTAINED') uiStatus = 'Contained';
+      else if (item.status === 'IN_PROGRESS') uiStatus = 'In-Progress';
+      else if (item.status === 'UNDER_SUSTENANCE') uiStatus = 'Under-Sustenance';
+      else if (item.status === 'CLOSED') uiStatus = 'Closed';
+
+      return {
+        id: String(item.id),
+        srNo: String(item.srNo),
+        raisedDate: item.raisedAt ? item.raisedAt.split('T')[0] : '',
+        raisedBy: item.raisedByName,
+        raisedByDepartment: item.raisedByDepartmentName || item.raisedByDepartmentCode,
+        raisedByRole: item.raisedByRole,
+        mfName: item.plantCode || 'MF1',
+        lineAreaName: item.lineName,
+        modelName: item.modelName,
+        stationName: item.stationName,
+        redFlagNo: item.rfNo,
+        status: uiStatus,
+        redFlagType: (item.redFlagType as any) || 'Quality',
+        redFlagSubType: item.redFlagSubtype,
+        severity: (item.severity === 'CRITICAL' ? 'Critical (Line Stop)' : item.severity === 'MAJOR' ? 'Major (Quarantine)' : 'Moderate (Rework)') as any,
+        category5M: (item.category5M as any) || 'Method',
+        responsibleDepartment: item.targetDepartmentName || item.targetDepartmentCode,
+        targetDepartment: item.targetDepartmentName || item.targetDepartmentCode,
+        targetPerson: item.targetPerson,
+        redFlagDescription: item.description,
+        evidencePhoto: item.thumbnailUrl || '',
+        teamLeader: item.teamLeader,
+        repetitiveOccurrence: 'First Time',
+        closureResponsibility: item.closureResponsibility,
+        qaCustodian: item.qaCustodianName || 'Suresh Kumar (QA)',
+        qaCustodianStatus: item.qaCustodianStatus as any,
+        containmentStatus: (item.containmentStatus === 'VERIFIED' ? 'Verified' : item.containmentStatus === 'CONTAINED' ? 'Contained' : 'Pending') as any,
+        suspectQtyQuarantined: item.qtyQuarantined,
+        containmentAction: item.containmentAction,
+        targetDate: item.targetDate || '',
+        sustenanceStartDate: item.sustenanceStartDate || undefined,
+        sustenanceAchieved: item.sustenanceAchieved,
+        createdAt: item.raisedAt,
+      };
+    });
+  }, [flagsQuery.data?.results]);
+
+  // Active flags for Tracker Table / Cards
+  const activeFlagsForTracker = flagsQuery.data?.results ? apiItemsAsRedFlags : redFlags;
 
   // Calculate Metrics
   const totalFlags = redFlags.length;
@@ -448,12 +526,13 @@ export default function RedFlagSystem({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={exportToCSV}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 transition-colors shadow-xs cursor-pointer"
+            onClick={handleExportCSV}
+            disabled={isExporting}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
             title="Export full Red Flag spreadsheet to CSV"
           >
-            <Download className="w-3.5 h-3.5 text-slate-600" />
-            <span>Export CSV</span>
+            <Download className={`w-3.5 h-3.5 text-slate-600 ${isExporting ? 'animate-bounce' : ''}`} />
+            <span>{isExporting ? 'Exporting...' : 'Export CSV'}</span>
           </button>
           
           <button
@@ -506,7 +585,7 @@ export default function RedFlagSystem({
           }`}
         >
           <ClipboardList className="w-3.5 h-3.5 text-slate-600" />
-          <span>3. Master Tracker ({filteredFlags.length})</span>
+          <span>3. Master Tracker ({flagsQuery.data?.count ?? (flagsQuery.isLoading ? '...' : totalFlags)})</span>
         </button>
 
         {/* 4. Presentation Mode */}
@@ -714,37 +793,62 @@ export default function RedFlagSystem({
         <div className="space-y-4">
           
           {/* KPI Metric Strip (High-density, zero-pill) */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div className="p-3 bg-white border border-slate-200 rounded-lg shadow-2xs">
-              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Total Raised</span>
-              <div className="text-xl font-bold font-mono text-slate-900 mt-0.5 tabular-nums">{totalFlags}</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">Shop floor non-conformances</div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-slate-600">
+              <span className="font-semibold text-slate-700">Shop Floor Health &amp; Anomaly Metrics</span>
+              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-medium text-slate-600 bg-white border border-slate-200 px-2.5 py-1 rounded shadow-2xs hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={scopedKpi}
+                  onChange={(e) => setScopedKpi(e.target.checked)}
+                  className="rounded border-slate-300 text-slate-900 focus:ring-0 cursor-pointer"
+                />
+                <span>Scope KPIs to current filter selection</span>
+              </label>
             </div>
 
-            <div className="p-3 bg-white border border-rose-200 rounded-lg shadow-2xs">
-              <span className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider block">Open / Action Needed</span>
-              <div className="text-xl font-bold font-mono text-rose-700 mt-0.5 tabular-nums">{openCount + containedCount}</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">{containedCount} WIP lots contained</div>
-            </div>
-
-            <div className="p-3 bg-white border border-amber-200 rounded-lg shadow-2xs">
-              <span className="text-[11px] font-semibold text-amber-700 uppercase tracking-wider block">Under 3M Sustenance</span>
-              <div className="text-xl font-bold font-mono text-amber-800 mt-0.5 tabular-nums">{underSustenanceCount}</div>
-              <div className="text-[11px] text-amber-800 mt-0.5 font-medium">Points Kept Open (M1/M2/M3)</div>
-            </div>
-
-            <div className="p-3 bg-white border border-emerald-200 rounded-lg shadow-2xs">
-              <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider block">3M Sustained &amp; Closed</span>
-              <div className="text-xl font-bold font-mono text-emerald-800 mt-0.5 tabular-nums">{closedCount}</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">90-day zero recurrence audited</div>
-            </div>
-
-            <div className="p-3 bg-white border border-slate-200 rounded-lg shadow-2xs">
-              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">QA Custodian Backlog</span>
-              <div className="text-xl font-bold font-mono text-slate-800 mt-0.5 tabular-nums">
-                {redFlags.filter(r => r.qaCustodianStatus === 'Review Pending' || !r.qaCustodianStatus).length}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="p-3 bg-white border border-slate-200 rounded-lg shadow-2xs">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">Total Raised</span>
+                <div className="text-xl font-bold font-mono text-slate-900 mt-0.5 tabular-nums">
+                  {summaryQuery.data?.totalRaised ?? totalFlags}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">Shop floor non-conformances</div>
               </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">Pending QA verification</div>
+
+              <div className="p-3 bg-white border border-rose-200 rounded-lg shadow-2xs">
+                <span className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider block">Open / Action Needed</span>
+                <div className="text-xl font-bold font-mono text-rose-700 mt-0.5 tabular-nums">
+                  {summaryQuery.data?.openActionNeeded ?? (openCount + containedCount)}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  {summaryQuery.data?.containedCount ?? containedCount} WIP lots contained
+                </div>
+              </div>
+
+              <div className="p-3 bg-white border border-amber-200 rounded-lg shadow-2xs">
+                <span className="text-[11px] font-semibold text-amber-700 uppercase tracking-wider block">Under 3M Sustenance</span>
+                <div className="text-xl font-bold font-mono text-amber-800 mt-0.5 tabular-nums">
+                  {summaryQuery.data?.underSustenance ?? underSustenanceCount}
+                </div>
+                <div className="text-[11px] text-amber-800 mt-0.5 font-medium">Points Kept Open (M1/M2/M3)</div>
+              </div>
+
+              <div className="p-3 bg-white border border-emerald-200 rounded-lg shadow-2xs">
+                <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider block">3M Sustained &amp; Closed</span>
+                <div className="text-xl font-bold font-mono text-emerald-800 mt-0.5 tabular-nums">
+                  {summaryQuery.data?.closedSustained ?? closedCount}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">90-day zero recurrence audited</div>
+              </div>
+
+              <div className="p-3 bg-white border border-slate-200 rounded-lg shadow-2xs">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">QA Custodian Backlog</span>
+                <div className="text-xl font-bold font-mono text-slate-800 mt-0.5 tabular-nums">
+                  {summaryQuery.data?.qaCustodianBacklog ?? 0}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">Pending QA verification</div>
+              </div>
             </div>
           </div>
 
@@ -763,12 +867,33 @@ export default function RedFlagSystem({
               />
             </div>
 
+            {/* Plant Filter */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500 font-medium">Plant:</span>
+              <select
+                value={plantFilter}
+                onChange={(e) => {
+                  setPlantFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="bg-white px-2 py-1.5 border border-slate-300 rounded text-xs outline-none font-medium"
+              >
+                <option value="All">All Plants</option>
+                <option value="MF1">MF1 (Assembly & Testing)</option>
+                <option value="MF2">MF2 (Machining & CNC)</option>
+                <option value="MF3">MF3 (Moulding & Tooling)</option>
+              </select>
+            </div>
+
             {/* Status Filter */}
             <div className="flex items-center gap-1.5">
               <span className="text-slate-500 font-medium">Status:</span>
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value as any);
+                  setPage(1);
+                }}
                 className="bg-white px-2 py-1.5 border border-slate-300 rounded text-xs outline-none font-medium"
               >
                 <option value="All">All Statuses</option>
@@ -785,7 +910,10 @@ export default function RedFlagSystem({
               <span className="text-slate-500 font-medium">Target Dept:</span>
               <select
                 value={targetDeptFilter}
-                onChange={(e) => setTargetDeptFilter(e.target.value)}
+                onChange={(e) => {
+                  setTargetDeptFilter(e.target.value);
+                  setPage(1);
+                }}
                 className="bg-white px-2 py-1.5 border border-slate-300 rounded text-xs outline-none font-medium"
               >
                 <option value="All">All Target Depts</option>
@@ -802,7 +930,10 @@ export default function RedFlagSystem({
               <span className="text-slate-500 font-medium">5M Category:</span>
               <select
                 value={category5MFilter}
-                onChange={(e) => setCategory5MFilter(e.target.value)}
+                onChange={(e) => {
+                  setCategory5MFilter(e.target.value);
+                  setPage(1);
+                }}
                 className="bg-white px-2 py-1.5 border border-slate-300 rounded text-xs outline-none font-medium"
               >
                 <option value="All">All 5M Categories</option>
@@ -820,7 +951,10 @@ export default function RedFlagSystem({
               <span className="text-slate-500 font-medium">Severity:</span>
               <select
                 value={severityFilter}
-                onChange={(e) => setSeverityFilter(e.target.value)}
+                onChange={(e) => {
+                  setSeverityFilter(e.target.value);
+                  setPage(1);
+                }}
                 className="bg-white px-2 py-1.5 border border-slate-300 rounded text-xs outline-none font-medium"
               >
                 <option value="All">All Severities</option>
@@ -875,20 +1009,27 @@ export default function RedFlagSystem({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredFlags.length === 0 ? (
+                    {flagsQuery.isLoading ? (
+                      <tr>
+                        <td colSpan={13} className="p-8 text-center text-slate-500 font-medium">
+                          <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-rose-600" />
+                          <span>Loading non-conformances from API...</span>
+                        </td>
+                      </tr>
+                    ) : activeFlagsForTracker.length === 0 ? (
                       <tr>
                         <td colSpan={13} className="p-8 text-center text-slate-400">
                           No Red Flag records found matching current search and filter criteria.
                         </td>
                       </tr>
                     ) : (
-                      filteredFlags.map((rf, idx) => (
+                      activeFlagsForTracker.map((rf, idx) => (
                         <tr key={rf.id} className="hover:bg-slate-50/80 transition-colors">
                           
                           {/* Sr & RF No */}
                           <td className="p-2.5 whitespace-nowrap">
                             <span className="font-mono font-bold text-rose-700 block">{rf.redFlagNo}</span>
-                            <span className="text-[10px] text-slate-600 font-mono">Sr #{rf.srNo || idx + 1}</span>
+                            <span className="text-[10px] text-slate-600 font-mono">Sr #{rf.srNo || (page - 1) * pageSize + idx + 1}</span>
                           </td>
 
                           {/* Raised Date */}
@@ -1035,7 +1176,7 @@ export default function RedFlagSystem({
           ) : (
             /* CARDS LAYOUT */
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {filteredFlags.map((rf) => (
+              {activeFlagsForTracker.map((rf) => (
                 <div key={rf.id} className="bg-white border border-slate-200 rounded-lg p-3.5 shadow-2xs space-y-3 flex flex-col justify-between">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between border-b border-slate-100 pb-2">
@@ -1082,6 +1223,65 @@ export default function RedFlagSystem({
               ))}
             </div>
           )}
+
+          {/* Phase 3 Pagination Controls */}
+          <div className="bg-white px-4 py-3 border border-slate-200 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+            <div className="text-slate-600 font-mono text-[11px]">
+              Showing{' '}
+              <strong className="text-slate-900">
+                {flagsQuery.data?.count ? (page - 1) * pageSize + 1 : 0}
+              </strong>
+              {' '}-{' '}
+              <strong className="text-slate-900">
+                {Math.min(page * pageSize, flagsQuery.data?.count ?? 0)}
+              </strong>
+              {' '}of{' '}
+              <strong className="text-slate-900">{flagsQuery.data?.count ?? 0}</strong>
+              {' '}non-conformances
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-500">Rows per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(1);
+                  }}
+                  className="bg-white px-2 py-1 border border-slate-300 rounded text-xs outline-none font-medium"
+                >
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-1 font-mono">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1 || flagsQuery.isLoading}
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded disabled:opacity-40 disabled:cursor-not-allowed font-medium cursor-pointer"
+                >
+                  Previous
+                </button>
+                <span className="px-2 py-1 text-slate-700">
+                  Page {page} of {Math.max(1, Math.ceil((flagsQuery.data?.count ?? 0) / pageSize))}
+                </span>
+                <button
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={
+                    page >= Math.ceil((flagsQuery.data?.count ?? 0) / pageSize) ||
+                    flagsQuery.isLoading
+                  }
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded disabled:opacity-40 disabled:cursor-not-allowed font-medium cursor-pointer"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
 
         </div>
       )}

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { 
   X, 
   CheckCircle, 
@@ -19,9 +20,19 @@ import {
   Zap,
   Calendar,
   Save,
-  RotateCcw
+  RotateCcw,
+  RefreshCw,
+  Lock
 } from 'lucide-react';
 import { RedFlag, MonthSustenanceCheck } from '../types';
+import {
+  fetchRedFlagDetail,
+  updateRedFlagDetails,
+  updateRedFlagContainment,
+  verifyContainment,
+  unverifyContainment,
+  RedFlagDetail,
+} from '../api/redflag';
 import CameraModal from './CameraModal';
 
 interface RedFlagActionModalProps {
@@ -47,10 +58,24 @@ export default function RedFlagActionModal({
   currentPersona = 'Suresh Kumar (QA Lead)',
   onNavigateToModule
 }: RedFlagActionModalProps) {
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'details' | 'containment' | 'escalation' | 'rca' | 'sustenance'>('details');
   const [showCamera, setShowCamera] = useState<'evidence' | 'closure' | null>(null);
   const [isEscalating, setIsEscalating] = useState<string | null>(null);
   const [saveToast, setSaveToast] = useState(false);
+
+  // Phase 4 State: Fresh server detail and optimistic concurrency
+  const [flagDetail, setFlagDetail] = useState<RedFlagDetail | null>(null);
+  const [isLoadingDetail, setIsLoadingDetail] = useState(true);
+  const [isSavingTab1, setIsSavingTab1] = useState(false);
+  const [isSavingTab2, setIsSavingTab2] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [isUnverifying, setIsUnverifying] = useState(false);
+  const [conflictError, setConflictError] = useState<string | null>(null);
+  const [saveSuccessTab1, setSaveSuccessTab1] = useState(false);
+  const [saveSuccessTab2, setSaveSuccessTab2] = useState(false);
+  const [redTagNo, setRedTagNo] = useState('');
+  const [verificationNote, setVerificationNote] = useState('');
 
   // Form states initialized with redFlag values
   const [formData, setFormData] = useState({
@@ -120,6 +145,215 @@ export default function RedFlagActionModal({
     approvedByProduction: redFlag.approvedByProduction || '',
     status: redFlag.status || 'Open'
   });
+
+  // Load fresh server state on modal mount
+  const loadFreshDetail = async () => {
+    try {
+      setIsLoadingDetail(true);
+      setConflictError(null);
+      const data = await fetchRedFlagDetail(redFlag.id);
+      setFlagDetail(data);
+
+      let uiStatus: RedFlag['status'] = 'Open';
+      if (data.status === 'OPEN') uiStatus = 'Open';
+      else if (data.status === 'CONTAINED') uiStatus = 'Contained';
+      else if (data.status === 'IN_PROGRESS') uiStatus = 'In-Progress';
+      else if (data.status === 'UNDER_SUSTENANCE') uiStatus = 'Under-Sustenance';
+      else if (data.status === 'CLOSED') uiStatus = 'Closed';
+
+      let uiSeverity: any = 'Major (Quarantine)';
+      if (data.severity === 'CRITICAL') uiSeverity = 'Critical (Line Stop)';
+      else if (data.severity === 'MAJOR') uiSeverity = 'Major (Quarantine)';
+      else if (data.severity === 'MINOR') uiSeverity = 'Moderate (Rework)';
+
+      setFormData(prev => ({
+        ...prev,
+        raisedBy: data.raisedByName || prev.raisedBy,
+        raisedByDepartment: data.raisedByDepartmentName || data.raisedByDepartmentCode || prev.raisedByDepartment,
+        targetDepartment: data.targetDepartmentName || data.targetDepartmentCode || prev.targetDepartment,
+        targetPerson: data.targetPerson || prev.targetPerson,
+        qaCustodian: data.qaCustodianName || prev.qaCustodian,
+        qaCustodianNotes: data.qaCustodianNotes || prev.qaCustodianNotes,
+        severity: uiSeverity,
+        category5M: (data.category5M as any) || prev.category5M,
+        redFlagType: (data.redFlagType as any) || prev.redFlagType,
+        redFlagSubType: data.redFlagSubtype || prev.redFlagSubType,
+        redFlagDescription: data.description || prev.redFlagDescription,
+        teamLeader: data.teamLeader || prev.teamLeader,
+        closureResponsibility: data.closureResponsibility || prev.closureResponsibility,
+        targetDate: data.targetDate || prev.targetDate,
+        containmentStatus: (data.containment?.status === 'VERIFIED' ? 'Verified' : data.containment?.status === 'CONTAINED' ? 'Contained' : 'Pending') as any,
+        suspectQtyQuarantined: data.containment?.qtyQuarantined ?? data.qtyQuarantined ?? prev.suspectQtyQuarantined,
+        containmentAction: data.containment?.action || data.containmentAction || prev.containmentAction,
+        containmentVerifiedBy: data.containment?.verifiedByName || prev.containmentVerifiedBy,
+        containmentVerifiedDate: data.containment?.verifiedAt ? data.containment.verifiedAt.replace('T', ' ').substring(0, 16) : prev.containmentVerifiedDate,
+        status: uiStatus,
+      }));
+
+      setRedTagNo(data.containment?.redTagNo || '');
+      setVerificationNote(data.containment?.verificationNote || '');
+    } catch (err: any) {
+      console.error('Failed to load fresh flag detail:', err);
+    } finally {
+      setIsLoadingDetail(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFreshDetail();
+  }, [redFlag.id]);
+
+  const mapDeptToCode = (dept: string): string => {
+    if (dept === 'Production') return 'PROD';
+    if (dept === 'Quality' || dept === 'Quality / QA') return 'QA';
+    if (dept === 'Maintenance') return 'MAINT';
+    if (dept === 'Tooling & Die') return 'TOOL';
+    if (dept === 'Safety & EHS') return 'EHS';
+    if (dept === 'Logistics & Stores' || dept === 'Stores & Inward') return 'LOG';
+    if (dept === 'Engineering' || dept === 'Engineering / NPE') return 'ENG';
+    if (dept === 'Supplier / Inward') return 'SUPP';
+    return dept;
+  };
+
+  const mapSeverityToApi = (sev: string): string => {
+    if (sev.includes('Critical')) return 'CRITICAL';
+    if (sev.includes('Major')) return 'MAJOR';
+    if (sev.includes('Moderate') || sev.includes('Minor')) return 'MINOR';
+    return 'MAJOR';
+  };
+
+  // Tab 1 Save: Anomaly Details
+  const handleSaveTab1 = async () => {
+    if (!flagDetail) return;
+    try {
+      setIsSavingTab1(true);
+      setConflictError(null);
+      const updated = await updateRedFlagDetails(flagDetail.id, {
+        version: flagDetail.version,
+        targetDepartment: mapDeptToCode(formData.targetDepartment),
+        targetPerson: formData.targetPerson,
+        qaCustodianNotes: formData.qaCustodianNotes,
+        redFlagType: formData.redFlagType,
+        redFlagSubtype: formData.redFlagSubType,
+        category5M: formData.category5M,
+        severity: mapSeverityToApi(formData.severity),
+        description: formData.redFlagDescription,
+        targetDate: formData.targetDate || undefined,
+        closureResponsibility: formData.closureResponsibility,
+        teamLeader: formData.teamLeader,
+      });
+
+      setFlagDetail(updated);
+      setSaveSuccessTab1(true);
+      setTimeout(() => setSaveSuccessTab1(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ['redflags'] });
+      queryClient.invalidateQueries({ queryKey: ['redflags-summary'] });
+      onUpdate(String(updated.id), {
+        targetDepartment: updated.targetDepartmentName,
+        targetPerson: updated.targetPerson,
+        qaCustodianNotes: updated.qaCustodianNotes,
+        severity: formData.severity as any,
+        category5M: formData.category5M as any,
+        redFlagDescription: updated.description,
+      });
+    } catch (err: any) {
+      if (err.status === 409) {
+        setConflictError(err.message || 'Conflict: This flag was modified by another user. Reload to view changes.');
+      } else {
+        alert(err.message || 'Error updating anomaly details');
+      }
+    } finally {
+      setIsSavingTab1(false);
+    }
+  };
+
+  // Tab 2 Save: Containment
+  const handleSaveTab2 = async () => {
+    if (!flagDetail) return;
+    try {
+      setIsSavingTab2(true);
+      setConflictError(null);
+      const updated = await updateRedFlagContainment(flagDetail.id, {
+        version: flagDetail.version,
+        qtyQuarantined: Number(formData.suspectQtyQuarantined) || 0,
+        action: formData.containmentAction,
+        redTagNo: redTagNo || '',
+      });
+
+      setFlagDetail(updated);
+      setSaveSuccessTab2(true);
+      setTimeout(() => setSaveSuccessTab2(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ['redflags'] });
+      queryClient.invalidateQueries({ queryKey: ['redflags-summary'] });
+      onUpdate(String(updated.id), {
+        suspectQtyQuarantined: updated.containment?.qtyQuarantined ?? updated.qtyQuarantined,
+        containmentAction: updated.containment?.action ?? updated.containmentAction,
+        status: updated.status as any,
+      });
+    } catch (err: any) {
+      if (err.status === 409) {
+        setConflictError(err.message || 'Conflict: This flag was modified by another user. Reload to view changes.');
+      } else {
+        alert(err.message || 'Error updating containment');
+      }
+    } finally {
+      setIsSavingTab2(false);
+    }
+  };
+
+  // Tab 2: Verify Containment
+  const handleVerifyContainment = async () => {
+    if (!flagDetail) return;
+    try {
+      setIsVerifying(true);
+      setConflictError(null);
+      const updated = await verifyContainment(flagDetail.id, verificationNote);
+      setFlagDetail(updated);
+      queryClient.invalidateQueries({ queryKey: ['redflags'] });
+      queryClient.invalidateQueries({ queryKey: ['redflags-summary'] });
+      setFormData(prev => ({
+        ...prev,
+        containmentStatus: 'Verified',
+        containmentVerifiedBy: updated.containment?.verifiedByName || 'QA Inspector',
+        containmentVerifiedDate: updated.containment?.verifiedAt ? updated.containment.verifiedAt.replace('T', ' ').substring(0, 16) : new Date().toISOString().substring(0, 16),
+        status: updated.status === 'OPEN' ? 'Contained' : prev.status,
+      }));
+      onUpdate(String(updated.id), {
+        containmentStatus: 'Verified',
+      });
+    } catch (err: any) {
+      alert(err.message || 'Verification failed');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  // Tab 2: Unverify Containment
+  const handleUnverifyContainment = async () => {
+    if (!flagDetail) return;
+    const reason = window.prompt('Please enter the reason for unverifying containment:');
+    if (!reason) return;
+    try {
+      setIsUnverifying(true);
+      setConflictError(null);
+      const updated = await unverifyContainment(flagDetail.id, reason);
+      setFlagDetail(updated);
+      queryClient.invalidateQueries({ queryKey: ['redflags'] });
+      queryClient.invalidateQueries({ queryKey: ['redflags-summary'] });
+      setFormData(prev => ({
+        ...prev,
+        containmentStatus: 'Contained',
+        containmentVerifiedBy: '',
+        containmentVerifiedDate: '',
+      }));
+    } catch (err: any) {
+      alert(err.message || 'Unverify failed');
+    } finally {
+      setIsUnverifying(false);
+    }
+  };
+
+  const isClosed = flagDetail?.status === 'CLOSED' || formData.status === 'Closed';
 
   const handleSaveAll = (targetStatus?: RedFlag['status']) => {
     const finalStatus = targetStatus || formData.status;
@@ -274,12 +508,22 @@ export default function RedFlagActionModal({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-mono font-bold text-rose-400 text-sm">{redFlag.redFlagNo}</span>
+                <span className="font-mono font-bold text-rose-400 text-sm">
+                  {flagDetail?.rfNo || redFlag.redFlagNo}
+                </span>
+                <span className="font-mono text-[10px] bg-slate-800 text-slate-300 border border-slate-700 px-2 py-0.5 rounded font-bold">
+                  v{flagDetail?.version ?? 1}
+                </span>
                 <span className="text-slate-400">·</span>
-                <span className="font-semibold text-sm">{redFlag.lineAreaName} ({redFlag.stationName})</span>
+                <span className="font-semibold text-sm">
+                  {flagDetail?.lineName || redFlag.lineAreaName} ({flagDetail?.stationName || redFlag.stationName})
+                </span>
+                {isLoadingDetail && (
+                  <RefreshCw className="w-3 h-3 text-slate-400 animate-spin" />
+                )}
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-400">
-                <span>Raised: {redFlag.raisedDate}</span>
+                <span>Raised: {flagDetail?.raisedAt ? flagDetail.raisedAt.split('T')[0] : redFlag.raisedDate}</span>
                 <span>·</span>
                 <span>Raised By: <strong className="text-slate-200">{formData.raisedBy}</strong> ({formData.raisedByDepartment})</span>
                 <span>·</span>
@@ -305,6 +549,33 @@ export default function RedFlagActionModal({
             </button>
           </div>
         </div>
+
+        {/* Phase 4 Optimistic Concurrency Conflict Banner */}
+        {conflictError && (
+          <div className="bg-rose-600 text-white px-6 py-2.5 flex items-center justify-between text-xs font-semibold shrink-0">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
+              <span>{conflictError}</span>
+            </div>
+            <button
+              onClick={loadFreshDetail}
+              className="px-3 py-1 bg-white text-rose-800 hover:bg-rose-50 rounded text-xs font-bold cursor-pointer transition-colors shadow-xs"
+            >
+              Reload Latest State
+            </button>
+          </div>
+        )}
+
+        {/* Phase 4 Read-Only Banner for Closed Flags */}
+        {isClosed && (
+          <div className="bg-slate-800 text-amber-300 px-6 py-2 flex items-center justify-between text-xs font-mono shrink-0 border-b border-slate-700">
+            <div className="flex items-center gap-2">
+              <Lock className="w-3.5 h-3.5 text-amber-400" />
+              <span>Quality Record CLOSED: Historical IATF quality evidence is locked and read-only.</span>
+            </div>
+            <span className="text-[10px] font-bold text-slate-400 bg-slate-900 px-2 py-0.5 rounded">STATUS: CLOSED</span>
+          </div>
+        )}
 
         {/* Tab Controls - Functional Segmented Switcher (Zero-pill discipline) */}
         <div className="bg-slate-100 border-b border-slate-200 px-6 py-2 shrink-0 flex items-center justify-between">
@@ -357,18 +628,41 @@ export default function RedFlagActionModal({
           </div>
 
           <div className="flex items-center gap-2">
-            {saveToast && (
+            {(saveSuccessTab1 || saveSuccessTab2 || saveToast) && (
               <span className="text-xs text-emerald-600 font-semibold animate-fade-in flex items-center gap-1">
                 <Check className="w-3.5 h-3.5" /> Saved
               </span>
             )}
-            <button
-              onClick={() => handleSaveAll()}
-              className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded transition-colors cursor-pointer"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>Save Progress</span>
-            </button>
+
+            {/* Per-Section Save Endpoints (Phase 4) */}
+            {activeTab === 'details' ? (
+              <button
+                onClick={handleSaveTab1}
+                disabled={isSavingTab1 || isClosed}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+              >
+                <Save className={`w-3.5 h-3.5 ${isSavingTab1 ? 'animate-spin' : ''}`} />
+                <span>{isSavingTab1 ? 'Saving Details...' : 'Save Anomaly Details'}</span>
+              </button>
+            ) : activeTab === 'containment' ? (
+              <button
+                onClick={handleSaveTab2}
+                disabled={isSavingTab2 || isClosed}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+              >
+                <Save className={`w-3.5 h-3.5 ${isSavingTab2 ? 'animate-spin' : ''}`} />
+                <span>{isSavingTab2 ? 'Saving Containment...' : 'Save Containment'}</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => handleSaveAll()}
+                disabled={isClosed}
+                className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded transition-colors cursor-pointer disabled:opacity-40"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Save Progress</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -397,33 +691,29 @@ export default function RedFlagActionModal({
                 
                 {/* Originator Block */}
                 <div className="space-y-3">
-                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide border-b border-slate-100 pb-1">
-                    Originator (Raised By)
-                  </h4>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                      Originator (Raised By)
+                    </h4>
+                    <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono font-medium">Read-Only</span>
+                  </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Originator Name</label>
                     <input
                       type="text"
                       value={formData.raisedBy}
-                      onChange={(e) => setFormData({ ...formData, raisedBy: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none"
+                      readOnly
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-slate-100 text-slate-700 cursor-not-allowed outline-none font-medium"
                     />
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Originating Department</label>
-                    <select
+                    <input
+                      type="text"
                       value={formData.raisedByDepartment}
-                      onChange={(e) => setFormData({ ...formData, raisedByDepartment: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none"
-                    >
-                      <option value="Production">Production</option>
-                      <option value="Quality">Quality / QA</option>
-                      <option value="Maintenance">Maintenance</option>
-                      <option value="Safety & EHS">Safety &amp; EHS</option>
-                      <option value="Logistics & Stores">Logistics &amp; Stores</option>
-                      <option value="Tooling & Die">Tooling &amp; Die</option>
-                      <option value="Engineering">Engineering / NPE</option>
-                    </select>
+                      readOnly
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded bg-slate-100 text-slate-700 cursor-not-allowed outline-none font-medium"
+                    />
                   </div>
                 </div>
 
@@ -435,9 +725,10 @@ export default function RedFlagActionModal({
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Target Department</label>
                     <select
+                      disabled={isClosed}
                       value={formData.targetDepartment}
                       onChange={(e) => setFormData({ ...formData, targetDepartment: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none font-semibold text-slate-800"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none font-semibold text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
                     >
                       <option value="Production">Production</option>
                       <option value="Maintenance">Maintenance</option>
@@ -451,10 +742,11 @@ export default function RedFlagActionModal({
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Responsible Person / Supervisor</label>
                     <input
                       type="text"
+                      disabled={isClosed}
                       value={formData.targetPerson}
                       onChange={(e) => setFormData({ ...formData, targetPerson: e.target.value })}
                       placeholder="e.g. Ramesh Kumar (Area Lead)"
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
                     />
                   </div>
                 </div>
@@ -469,9 +761,10 @@ export default function RedFlagActionModal({
                   </label>
                   <input
                     type="text"
+                    disabled={isClosed}
                     value={formData.qaCustodian}
                     onChange={(e) => setFormData({ ...formData, qaCustodian: e.target.value })}
-                    className="w-full text-xs px-2.5 py-1.5 border border-rose-300 rounded focus:border-rose-900 outline-none bg-white font-semibold"
+                    className="w-full text-xs px-2.5 py-1.5 border border-rose-300 rounded focus:border-rose-900 outline-none bg-white font-semibold disabled:bg-slate-100 disabled:cursor-not-allowed"
                   />
                   <p className="text-[10px] text-rose-700 mt-1">QA Custodian monitors sustenance checks and signs final closure.</p>
                 </div>
@@ -481,10 +774,11 @@ export default function RedFlagActionModal({
                   </label>
                   <input
                     type="text"
+                    disabled={isClosed}
                     value={formData.qaCustodianNotes}
                     onChange={(e) => setFormData({ ...formData, qaCustodianNotes: e.target.value })}
                     placeholder="QA guidance or notes for this red flag"
-                    className="w-full text-xs px-2.5 py-1.5 border border-rose-300 rounded focus:border-rose-900 outline-none bg-white"
+                    className="w-full text-xs px-2.5 py-1.5 border border-rose-300 rounded focus:border-rose-900 outline-none bg-white disabled:bg-slate-100 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>
@@ -495,9 +789,10 @@ export default function RedFlagActionModal({
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Defect Type</label>
                     <select
+                      disabled={isClosed}
                       value={formData.redFlagType}
                       onChange={(e) => setFormData({ ...formData, redFlagType: e.target.value as any })}
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded outline-none"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
                     >
                       <option value="Quality">Quality Non-conformance</option>
                       <option value="Machine">Machine / Tooling Breakdown</option>
@@ -510,9 +805,10 @@ export default function RedFlagActionModal({
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">5M+1E Category</label>
                     <select
+                      disabled={isClosed}
                       value={formData.category5M}
                       onChange={(e) => setFormData({ ...formData, category5M: e.target.value as any })}
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded outline-none font-semibold"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded outline-none font-semibold disabled:bg-slate-100 disabled:cursor-not-allowed"
                     >
                       <option value="Man">Man (Competency / Skill)</option>
                       <option value="Machine">Machine (Wear / Sensor / Calibration)</option>
@@ -525,9 +821,10 @@ export default function RedFlagActionModal({
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Severity Tier</label>
                     <select
+                      disabled={isClosed}
                       value={formData.severity}
                       onChange={(e) => setFormData({ ...formData, severity: e.target.value as any })}
-                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded outline-none font-bold text-rose-700"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded outline-none font-bold text-rose-700 disabled:bg-slate-100 disabled:cursor-not-allowed"
                     >
                       <option value="Critical (Line Stop)">Critical (Line Stop)</option>
                       <option value="Major (Quarantine)">Major (Quarantine / Hold)</option>
@@ -540,15 +837,54 @@ export default function RedFlagActionModal({
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">Problem / Anomaly Description</label>
                   <textarea
                     rows={3}
+                    disabled={isClosed}
                     value={formData.redFlagDescription}
                     onChange={(e) => setFormData({ ...formData, redFlagDescription: e.target.value })}
-                    className="w-full text-xs p-2 border border-slate-300 rounded focus:border-slate-900 outline-none leading-relaxed"
+                    className="w-full text-xs p-2 border border-slate-300 rounded focus:border-slate-900 outline-none leading-relaxed disabled:bg-slate-100 disabled:cursor-not-allowed"
                   />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Assigned Team Leader</label>
+                    <input
+                      type="text"
+                      disabled={isClosed}
+                      value={formData.teamLeader}
+                      onChange={(e) => setFormData({ ...formData, teamLeader: e.target.value })}
+                      placeholder="e.g. Anand K. (Line TL)"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Closure Responsibility</label>
+                    <input
+                      type="text"
+                      disabled={isClosed}
+                      value={formData.closureResponsibility}
+                      onChange={(e) => setFormData({ ...formData, closureResponsibility: e.target.value })}
+                      placeholder="e.g. Suresh Kumar (QA Lead)"
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Target Resolution Date</label>
+                    <input
+                      type="date"
+                      disabled={isClosed}
+                      value={formData.targetDate}
+                      onChange={(e) => setFormData({ ...formData, targetDate: e.target.value })}
+                      className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
+                    />
+                  </div>
                 </div>
 
                 {/* Photo Evidence */}
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Point-of-Defect Evidence Photo</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-semibold text-slate-600">Point-of-Defect Evidence Photo</label>
+                    <span className="text-[10px] text-slate-500 font-medium">Compulsory initial quality record</span>
+                  </div>
                   <div className="flex items-center gap-4">
                     {formData.evidencePhoto ? (
                       <div className="relative group">
@@ -557,13 +893,9 @@ export default function RedFlagActionModal({
                           alt="Evidence"
                           className="w-24 h-24 object-cover rounded border border-slate-200"
                         />
-                        <button
-                          type="button"
-                          onClick={() => setFormData({ ...formData, evidencePhoto: '' })}
-                          className="absolute -top-1 -right-1 bg-rose-600 text-white rounded-full p-1 text-[10px]"
-                        >
-                          ✕
-                        </button>
+                        <div className="absolute bottom-0 inset-x-0 bg-slate-900/80 text-white text-[9px] py-0.5 text-center font-mono rounded-b">
+                          Audit Photo
+                        </div>
                       </div>
                     ) : (
                       <div className="w-24 h-24 border-2 border-dashed border-slate-300 rounded flex items-center justify-center text-slate-400 text-xs">
@@ -572,11 +904,12 @@ export default function RedFlagActionModal({
                     )}
                     <button
                       type="button"
+                      disabled={isClosed}
                       onClick={() => setShowCamera('evidence')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 hover:bg-slate-50 text-xs font-semibold rounded text-slate-700 cursor-pointer"
+                      className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 hover:bg-slate-50 text-xs font-semibold rounded text-slate-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Camera className="w-4 h-4 text-slate-500" />
-                      <span>Take / Upload Photo</span>
+                      <span>{formData.evidencePhoto ? 'Replace Evidence Photo' : 'Take / Upload Photo'}</span>
                     </button>
                   </div>
                 </div>
@@ -589,18 +922,66 @@ export default function RedFlagActionModal({
           {/* TAB 2: Containment (4D) */}
           {activeTab === 'containment' && (
             <div className="space-y-6">
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between text-xs">
-                <div>
-                  <strong className="text-amber-900 block font-bold">Immediate Shift Containment SLA (&lt; 2 Hours)</strong>
-                  <span className="text-amber-800">
-                    Suspect material must be physically quarantined, counted, and verified to prevent defect escape to downstream stations.
-                  </span>
+              {/* Containment SLA Banner */}
+              {flagDetail?.containmentSlaBreached ? (
+                <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg flex items-center justify-between text-xs">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong className="text-rose-900 block font-bold">
+                        CRITICAL SLA BREACH: Containment SLA (&gt; 120 Minutes) Exceeded
+                      </strong>
+                      <span className="text-rose-800">
+                        Shift containment elapsed {flagDetail.containmentSlaMinutes != null ? `${flagDetail.containmentSlaMinutes} min` : '>120 min'} without verified physical quarantine. Escalated to QA Custodian and Area Supervisor.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 ml-3">
+                    <span className="text-[10px] text-rose-700 block uppercase font-bold">SLA Elapsed</span>
+                    <span className="font-mono font-bold text-rose-900 text-sm">
+                      {flagDetail.containmentSlaMinutes != null ? `${flagDetail.containmentSlaMinutes}m` : '>120m'}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <span className="text-[10px] text-amber-700 block uppercase font-bold">Status</span>
-                  <span className="font-bold text-amber-900">{formData.containmentStatus}</span>
+              ) : flagDetail?.containment?.status === 'VERIFIED' ? (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <div>
+                      <strong className="text-emerald-900 block font-bold">
+                        Shift Containment Verified &amp; Secured
+                      </strong>
+                      <span className="text-emerald-800">
+                        Containment signed off {flagDetail.containmentSlaMinutes != null ? `in ${flagDetail.containmentSlaMinutes} minutes` : ''} within shift threshold.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="text-[10px] text-emerald-700 block uppercase font-bold">Status</span>
+                    <span className="font-bold text-emerald-900 font-mono">VERIFIED</span>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                    <div>
+                      <strong className="text-amber-900 block font-bold">
+                        Immediate Shift Containment SLA (&lt; 2 Hours)
+                      </strong>
+                      <span className="text-amber-800">
+                        Suspect material must be physically quarantined, counted, and verified within 120 minutes of defect detection.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 ml-3">
+                    <span className="text-[10px] text-amber-700 block uppercase font-bold">Time Window</span>
+                    <span className="font-mono font-bold text-amber-900 text-xs">
+                      {flagDetail?.containmentSlaMinutes != null ? `${flagDetail.containmentSlaMinutes}m / 120m` : '< 120 min'}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -610,25 +991,27 @@ export default function RedFlagActionModal({
                   <input
                     type="number"
                     min="0"
+                    disabled={isClosed}
                     value={formData.suspectQtyQuarantined}
                     onChange={(e) => setFormData({ ...formData, suspectQtyQuarantined: Number(e.target.value) })}
-                    className="w-full text-xs font-mono font-bold text-rose-700 px-3 py-2 border border-slate-300 rounded focus:border-slate-900 outline-none"
+                    className="w-full text-xs font-mono font-bold text-rose-700 px-3 py-2 border border-slate-300 rounded focus:border-slate-900 outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
                   />
                   <p className="text-[10px] text-slate-500 mt-1">Number of WIP units quarantined in Red Tag Area.</p>
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                    Containment Verification Sign-Off
+                    Red Tag Bay / Lot Tag Identifier No.
                   </label>
                   <input
                     type="text"
-                    value={formData.containmentVerifiedBy}
-                    onChange={(e) => setFormData({ ...formData, containmentVerifiedBy: e.target.value })}
-                    placeholder="e.g. Rajesh Patil (Shift In-charge)"
-                    className="w-full text-xs px-3 py-2 border border-slate-300 rounded focus:border-slate-900 outline-none"
+                    disabled={isClosed}
+                    value={redTagNo}
+                    onChange={(e) => setRedTagNo(e.target.value)}
+                    placeholder="e.g. RT-2026-0042 / Bay 4B"
+                    className="w-full text-xs font-mono px-3 py-2 border border-slate-300 rounded focus:border-slate-900 outline-none disabled:bg-slate-100 disabled:cursor-not-allowed"
                   />
-                  <p className="text-[10px] text-slate-500 mt-1">Verified by Shift In-charge or QA Inspector.</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Physical Red Tag attached to quarantine container.</p>
                 </div>
               </div>
 
@@ -638,31 +1021,102 @@ export default function RedFlagActionModal({
                 </label>
                 <textarea
                   rows={4}
+                  disabled={isClosed}
                   value={formData.containmentAction}
                   onChange={(e) => setFormData({ ...formData, containmentAction: e.target.value })}
                   placeholder="Detail 100% sorting, quarantine bay tag numbers, machine stoppage, and temporary process checks..."
-                  className="w-full text-xs p-3 border border-slate-300 rounded focus:border-slate-900 outline-none leading-relaxed"
+                  className="w-full text-xs p-3 border border-slate-300 rounded focus:border-slate-900 outline-none leading-relaxed disabled:bg-slate-100 disabled:cursor-not-allowed"
                 />
               </div>
 
-              <div className="flex items-center gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFormData({
-                      ...formData,
-                      containmentStatus: 'Verified',
-                      containmentVerifiedDate: new Date().toISOString().replace('T', ' ').substring(0, 16),
-                      status: formData.status === 'Open' ? 'Contained' : formData.status
-                    });
-                  }}
-                  className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded cursor-pointer transition-colors"
-                >
-                  ✓ Mark Containment Verified
-                </button>
-                <span className="text-xs text-slate-500">
-                  Transitions status to <strong>Contained</strong>
-                </span>
+              {/* Authenticated Verification Sign-off Box */}
+              <div className="p-4 border border-slate-200 rounded-lg bg-slate-50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-slate-700" />
+                    <span>Physical Containment Verification Sign-off</span>
+                  </h4>
+                  {flagDetail?.containment?.status === 'VERIFIED' ? (
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded flex items-center gap-1">
+                      <Check className="w-3 h-3" /> VERIFIED
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded">
+                      PENDING VERIFICATION
+                    </span>
+                  )}
+                </div>
+
+                {flagDetail?.containment?.status === 'VERIFIED' ? (
+                  <div className="bg-white p-3 border border-slate-200 rounded space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <div>
+                        <span className="text-[11px] text-slate-500">Verified By:</span>{' '}
+                        <strong className="text-slate-800 font-semibold">
+                          {flagDetail.containment.verifiedByName || formData.containmentVerifiedBy || 'QA Inspector'}
+                        </strong>
+                      </div>
+                      <div className="text-slate-500 text-[11px]">
+                        <span>At: </span>
+                        <span className="font-mono text-slate-700 font-semibold">
+                          {flagDetail.containment.verifiedAt
+                            ? flagDetail.containment.verifiedAt.replace('T', ' ').substring(0, 16)
+                            : formData.containmentVerifiedDate}
+                        </span>
+                      </div>
+                    </div>
+                    {flagDetail.containment.verificationNote && (
+                      <div className="text-xs text-slate-600 bg-slate-50 p-2 rounded border border-slate-100">
+                        <span className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Verification Note:</span>
+                        {flagDetail.containment.verificationNote}
+                      </div>
+                    )}
+                    <div className="pt-1 flex items-center justify-between">
+                      <span className="text-[11px] text-emerald-700 font-medium">
+                        ✓ Lot physically inspected &amp; segregated in quarantine zone.
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isUnverifying || isClosed}
+                        onClick={handleUnverifyContainment}
+                        className="px-2.5 py-1 text-xs text-rose-700 hover:text-rose-900 border border-rose-200 hover:bg-rose-50 rounded font-semibold cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+                      >
+                        <RotateCcw className={`w-3 h-3 ${isUnverifying ? 'animate-spin' : ''}`} />
+                        <span>{isUnverifying ? 'Reverting...' : 'Unverify Containment'}</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                        Verification Audit Note
+                      </label>
+                      <input
+                        type="text"
+                        disabled={isClosed}
+                        value={verificationNote}
+                        onChange={(e) => setVerificationNote(e.target.value)}
+                        placeholder="e.g. Physically counted 12 pcs in Bay 4B, red tag attached, line resumed"
+                        className="w-full text-xs px-3 py-1.5 border border-slate-300 rounded focus:border-slate-900 outline-none bg-white disabled:bg-slate-100"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={isVerifying || isClosed}
+                        onClick={handleVerifyContainment}
+                        className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-xs"
+                      >
+                        <Check className={`w-3.5 h-3.5 ${isVerifying ? 'animate-spin' : ''}`} />
+                        <span>{isVerifying ? 'Verifying...' : 'Sign-off & Verify Containment'}</span>
+                      </button>
+                      <span className="text-[11px] text-slate-500">
+                        Authenticates inspection, sets SLA timestamp, and transitions flag to <strong>Contained</strong>.
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -72,7 +72,7 @@ export default function RedFlagDashboard({ redFlags, onSelectRedFlag, onNavigate
 
   // 3-Month Sustenance compliance rate
   const itemsWithSustenance = filteredFlags.filter(r => r.sustenanceStartDate);
-  const sustainedSuccessCount = itemsWithSustenance.filter(r => r.month3Check?.status === 'Pass' || r.sustenanceAchieved).length;
+  const sustainedSuccessCount = itemsWithSustenance.filter(r => r.month3Check?.status === 'Passed' || r.sustenanceAchieved).length;
   const sustenancePassRate = itemsWithSustenance.length > 0 
     ? Math.round((sustainedSuccessCount / itemsWithSustenance.length) * 100) 
     : 100;
@@ -111,11 +111,11 @@ export default function RedFlagDashboard({ redFlags, onSelectRedFlag, onNavigate
 
   // Sustenance Funnel Breakdown
   const m1Checked = filteredFlags.filter(r => r.month1Check && r.month1Check.status !== 'Pending').length;
-  const m1Passed = filteredFlags.filter(r => r.month1Check?.status === 'Pass').length;
+  const m1Passed = filteredFlags.filter(r => r.month1Check?.status === 'Passed').length;
   const m2Checked = filteredFlags.filter(r => r.month2Check && r.month2Check.status !== 'Pending').length;
-  const m2Passed = filteredFlags.filter(r => r.month2Check?.status === 'Pass').length;
+  const m2Passed = filteredFlags.filter(r => r.month2Check?.status === 'Passed').length;
   const m3Checked = filteredFlags.filter(r => r.month3Check && r.month3Check.status !== 'Pending').length;
-  const m3Passed = filteredFlags.filter(r => r.month3Check?.status === 'Pass').length;
+  const m3Passed = filteredFlags.filter(r => r.month3Check?.status === 'Passed').length;
 
   // Reset all filters
   const resetFilters = () => {

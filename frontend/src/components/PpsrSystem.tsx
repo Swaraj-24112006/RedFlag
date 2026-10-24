@@ -131,7 +131,7 @@ export default function PpsrSystem({
     setEditWeek(report.week || 'WK-' + (new Date().getMonth() * 4 + 1));
     setEditCoach(report.coach || '');
     setEditCft(report.cft || '');
-    setEditStdStatusMF(report.stdStatusMF || 'Pending');
+    setEditStdStatusMF((report.stdStatusMF as any) || 'Pending');
     setEditStdDate(report.stdDate || '');
     setEditResponsibility(report.responsibility || report.projectLeader || '');
     setEditPpsrEndDate(report.ppsrEndDate || '');
@@ -527,7 +527,8 @@ export default function PpsrSystem({
         .map((s, i) => ({ no: i + 1, ...s, status: 'completed' })),
 
       readAcrossList: readAcrossActions
-        .filter(r => r.proposal.trim() !== ''),
+        .filter(r => r.proposal.trim() !== '')
+        .map((r, i) => ({ no: i + 1, ...r })),
       readAcrossExplanation,
 
       completionSignatures: {

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { RedFlag } from '../types';
 import { 
   ShieldAlert, 
@@ -17,8 +18,10 @@ import {
   Sparkles,
   ArrowRight,
   Clock,
-  Layers
+  Layers,
+  Loader2
 } from 'lucide-react';
+import { uploadAttachmentFile, dataUrlToFile, createRedFlag } from '../api/redflag';
 import CameraModal from './CameraModal';
 
 interface RedFlagSheetFormProps {
@@ -38,6 +41,8 @@ const presetRedFlagImages = {
 };
 
 export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToTracker }: RedFlagSheetFormProps) {
+  const queryClient = useQueryClient();
+
   // Originator info (Anyone can raise!)
   const [raisedBy, setRaisedBy] = useState('Rajesh Patil (Shift In-charge)');
   const [raisedByDepartment, setRaisedByDepartment] = useState('Production');
@@ -70,13 +75,37 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
   const [qaCustodian, setQaCustodian] = useState('Suresh Kumar (QA Lead)');
   const [targetDate, setTargetDate] = useState(new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
 
-  // Photos
+  // Photos & Phase 2 MinIO Attachments
   const [photoBefore, setPhotoBefore] = useState(presetRedFlagImages.genericBefore);
   const [photoAfter, setPhotoAfter] = useState(presetRedFlagImages.genericAfter);
   const [cameraTarget, setCameraTarget] = useState<'before' | 'after' | null>(null);
+  const [evidenceBeforeId, setEvidenceBeforeId] = useState<number | null>(null);
+  const [containmentAfterId, setContainmentAfterId] = useState<number | null>(null);
+  const [isUploadingBefore, setIsUploadingBefore] = useState(false);
+  const [isUploadingAfter, setIsUploadingAfter] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Errors & Feedback
   const [error, setError] = useState<string | null>(null);
+
+  const mapDeptToCode = (dept: string): string => {
+    if (dept === 'Production') return 'PROD';
+    if (dept === 'Quality' || dept === 'Quality / QA') return 'QA';
+    if (dept === 'Maintenance') return 'MAINT';
+    if (dept === 'Tooling & Die') return 'TOOL';
+    if (dept === 'Safety & EHS') return 'EHS';
+    if (dept === 'Logistics & Stores' || dept === 'Stores & Inward') return 'LOG';
+    if (dept === 'Engineering' || dept === 'Engineering / NPE') return 'ENG';
+    if (dept === 'Supplier / Inward') return 'SUPP';
+    return dept;
+  };
+
+  const mapSeverityToApi = (sev: string): string => {
+    if (sev.includes('Critical')) return 'CRITICAL';
+    if (sev.includes('Major')) return 'MAJOR';
+    if (sev.includes('Moderate') || sev.includes('Minor')) return 'MINOR';
+    return 'MAJOR';
+  };
 
   // Presets loader
   const loadPreset = (presetType: 'torque' | 'leak') => {
@@ -113,10 +142,12 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
       setSuspectQtyQuarantined(25);
       setContainmentStatus('Contained');
     }
+    setEvidenceBeforeId(null);
+    setContainmentAfterId(null);
     setError(null);
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>, target: 'before' | 'after') => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>, target: 'before' | 'after') => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
@@ -127,10 +158,28 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
         }
       };
       reader.readAsDataURL(file);
+
+      // Phase 2 MinIO Presign + Direct Upload + Confirm
+      try {
+        if (target === 'before') {
+          setIsUploadingBefore(true);
+          const att = await uploadAttachmentFile(file, 'EVIDENCE_BEFORE');
+          setEvidenceBeforeId(att.id);
+        } else {
+          setIsUploadingAfter(true);
+          const att = await uploadAttachmentFile(file, 'CONTAINMENT_AFTER');
+          setContainmentAfterId(att.id);
+        }
+      } catch (err: any) {
+        console.warn('Storage upload note:', err.message);
+      } finally {
+        if (target === 'before') setIsUploadingBefore(false);
+        else setIsUploadingAfter(false);
+      }
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!redFlagDescription.trim()) {
       setError('Please provide a complete description of the defect / anomaly.');
@@ -142,6 +191,74 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
       setError('The Point-of-Defect / Before photo is compulsory. Please take or upload a photo.');
       return;
     }
+
+    setIsSubmitting(true);
+    setError(null);
+
+    let beforeId = evidenceBeforeId;
+    let afterId = containmentAfterId;
+
+    // Auto-upload before photo if not uploaded yet (e.g. from preset or base64)
+    if (!beforeId && photoBefore) {
+      try {
+        setIsUploadingBefore(true);
+        const file = dataUrlToFile(photoBefore, `defect_before_${Date.now()}.jpg`);
+        const att = await uploadAttachmentFile(file, 'EVIDENCE_BEFORE');
+        beforeId = att.id;
+        setEvidenceBeforeId(att.id);
+      } catch (uploadErr: any) {
+        console.warn('Could not upload before photo to MinIO:', uploadErr.message);
+      } finally {
+        setIsUploadingBefore(false);
+      }
+    }
+
+    // Auto-upload after photo if provided and not uploaded yet
+    if (!afterId && photoAfter && photoAfter !== presetRedFlagImages.genericAfter) {
+      try {
+        setIsUploadingAfter(true);
+        const file = dataUrlToFile(photoAfter, `containment_after_${Date.now()}.jpg`);
+        const att = await uploadAttachmentFile(file, 'CONTAINMENT_AFTER');
+        afterId = att.id;
+        setContainmentAfterId(att.id);
+      } catch (uploadErr: any) {
+        console.warn('Could not upload after photo to MinIO:', uploadErr.message);
+      } finally {
+        setIsUploadingAfter(false);
+      }
+    }
+
+    // Call Phase 2 Backend Creation Endpoint
+    if (beforeId) {
+      try {
+        await createRedFlag({
+          targetDepartment: mapDeptToCode(targetDepartment),
+          targetPerson,
+          lineName: lineAreaName,
+          stationName,
+          modelName,
+          plant: mfName,
+          redFlagType,
+          redFlagSubtype: redFlagSubType,
+          severity: mapSeverityToApi(severity),
+          category5M,
+          repetitiveOccurrence: (repetitiveOccurrence.includes('Repeat') || repetitiveOccurrence.includes('Frequent')),
+          description: redFlagDescription,
+          qtyQuarantined: Number(suspectQtyQuarantined) || 0,
+          containmentAction,
+          evidenceBeforeId: beforeId,
+          containmentAfterId: afterId || undefined,
+          targetDate: targetDate || undefined,
+        });
+
+        queryClient.invalidateQueries({ queryKey: ['redflags'] });
+        queryClient.invalidateQueries({ queryKey: ['redflags-summary'] });
+      } catch (apiErr: any) {
+        console.error('API create red flag error:', apiErr);
+      }
+    }
+
+    setIsSubmitting(false);
 
     onAddRedFlag({
       raisedBy,
@@ -155,7 +272,7 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
       stationName,
       redFlagType,
       redFlagSubType,
-      severity,
+      severity: severity as any,
       category5M,
       responsibleDepartment: targetDepartment,
       redFlagDescription,
@@ -166,7 +283,7 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
       qaCustodian,
       qaCustodianStatus: 'Review Pending',
       qaCustodianNotes: 'QA custodian will oversee 4D immediate containment, root cause analysis, and 3-month sustenance.',
-      repetitiveOccurrence,
+      repetitiveOccurrence: (repetitiveOccurrence.includes('Repeat') || repetitiveOccurrence.includes('Frequent')) ? 'Repetitive' : 'First Time',
       closureResponsibility: qaCustodian,
       targetDate: targetDate || new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString().split('T')[0],
       evidencePhoto: photoBefore,
@@ -406,6 +523,17 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
                   alt="Point of defect before"
                   className="w-full h-full object-contain"
                 />
+                {isUploadingBefore && (
+                  <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex flex-col items-center justify-center text-white text-xs font-semibold gap-2">
+                    <Loader2 className="w-5 h-5 animate-spin text-rose-400" />
+                    <span>Uploading to MinIO S3...</span>
+                  </div>
+                )}
+                {evidenceBeforeId && !isUploadingBefore && (
+                  <div className="absolute top-2 right-2 bg-emerald-700 text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded shadow-xs flex items-center gap-1">
+                    <Check className="w-3 h-3" /> MinIO S3 Synced
+                  </div>
+                )}
               </div>
               <div className="flex items-center space-x-2">
                 <button
@@ -444,6 +572,17 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
                   alt="Containment after status"
                   className="w-full h-full object-contain"
                 />
+                {isUploadingAfter && (
+                  <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex flex-col items-center justify-center text-white text-xs font-semibold gap-2">
+                    <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+                    <span>Uploading to MinIO S3...</span>
+                  </div>
+                )}
+                {containmentAfterId && !isUploadingAfter && (
+                  <div className="absolute top-2 right-2 bg-emerald-700 text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded shadow-xs flex items-center gap-1">
+                    <Check className="w-3 h-3" /> MinIO S3 Synced
+                  </div>
+                )}
               </div>
               <div className="flex items-center space-x-2">
                 <button
@@ -628,10 +767,15 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
 
           <button
             type="submit"
-            className="px-7 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-md hover:shadow-lg transition flex items-center justify-center space-x-2 cursor-pointer"
+            disabled={isSubmitting || isUploadingBefore || isUploadingAfter}
+            className="px-7 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-md hover:shadow-lg transition flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <ShieldAlert className="w-4 h-4 text-rose-400" />
-            <span>AUTHORIZE &amp; RAISE RED FLAG</span>
+            {isSubmitting ? (
+              <Loader2 className="w-4 h-4 animate-spin text-rose-400" />
+            ) : (
+              <ShieldAlert className="w-4 h-4 text-rose-400" />
+            )}
+            <span>{isSubmitting ? 'AUTHORIZING & UPLOADING...' : 'AUTHORIZE & RAISE RED FLAG'}</span>
           </button>
         </div>
 
@@ -642,9 +786,32 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
         <CameraModal
           isOpen={true}
           title={cameraTarget === 'before' ? 'Capture Point of Defect Photo' : 'Capture Immediate Containment Photo'}
-          onCapture={(base64) => {
-            if (cameraTarget === 'before') setPhotoBefore(base64);
-            else setPhotoAfter(base64);
+          onCapture={async (base64) => {
+            if (cameraTarget === 'before') {
+              setPhotoBefore(base64);
+              try {
+                setIsUploadingBefore(true);
+                const file = dataUrlToFile(base64, `live_before_${Date.now()}.jpg`);
+                const att = await uploadAttachmentFile(file, 'EVIDENCE_BEFORE');
+                setEvidenceBeforeId(att.id);
+              } catch (err: any) {
+                console.warn('Live photo storage upload note:', err.message);
+              } finally {
+                setIsUploadingBefore(false);
+              }
+            } else {
+              setPhotoAfter(base64);
+              try {
+                setIsUploadingAfter(true);
+                const file = dataUrlToFile(base64, `live_after_${Date.now()}.jpg`);
+                const att = await uploadAttachmentFile(file, 'CONTAINMENT_AFTER');
+                setContainmentAfterId(att.id);
+              } catch (err: any) {
+                console.warn('Live photo storage upload note:', err.message);
+              } finally {
+                setIsUploadingAfter(false);
+              }
+            }
             setCameraTarget(null);
           }}
           onClose={() => setCameraTarget(null)}

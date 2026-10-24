@@ -388,7 +388,6 @@ export default function IshikawaFishbone({ ishikawa, problemTitle }: IshikawaFis
                         height="32"
                       >
                         <div
-                          xmlns="http://www.w3.org/1999/xhtml"
                           className={`text-[8px] leading-[9.5px] text-right pr-2 select-none font-semibold overflow-hidden text-ellipsis line-clamp-3 transition-colors duration-200 ${
                             isHighlighted ? 'text-indigo-950 font-black' : 'text-slate-600 group-hover/cause:text-slate-900'
                           }`}
@@ -457,7 +456,7 @@ export default function IshikawaFishbone({ ishikawa, problemTitle }: IshikawaFis
               width="100"
               height="95"
             >
-              <div xmlns="http://www.w3.org/1999/xhtml" className="h-full flex flex-col items-center justify-center text-center p-1 select-none">
+              <div className="h-full flex flex-col items-center justify-center text-center p-1 select-none">
                 <span className="text-[7px] font-black uppercase text-indigo-600 tracking-widest block font-mono">
                    NOK EFFECT
                 </span>
