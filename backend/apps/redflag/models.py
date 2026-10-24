@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from apps.masterdata.models import Department, Line, Plant, Station
 
@@ -54,7 +55,7 @@ class RedFlag(models.Model):
     rf_no = models.CharField(max_length=50, unique=True, db_index=True, help_text="e.g. RF-2026-0001")
 
     # Timing
-    raised_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    raised_at = models.DateTimeField(default=timezone.now, db_index=True)
     target_date = models.DateField(null=True, blank=True)
 
     # People & Roles
@@ -122,7 +123,7 @@ class RedFlag(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["-raised_at"]
+        ordering = ["-raised_at", "-id"]
         indexes = [
             models.Index(fields=["status", "-raised_at"]),
             models.Index(fields=["target_department", "status"]),

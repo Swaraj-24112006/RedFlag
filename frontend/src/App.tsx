@@ -119,8 +119,58 @@ export default function App() {
       const dataK = await safeFetchJson('/api/kaizens');
       if (dataK?.success && dataK?.data) setKaizens(dataK.data);
 
-      const dataR = await safeFetchJson('/api/redflags');
-      if (dataR?.success && dataR?.data) setRedFlags(dataR.data);
+      const dataR = (await safeFetchJson('/api/redflag/v1/flags/?ordering=-raised_at&page_size=100')) || (await safeFetchJson('/api/redflags'));
+      if (dataR?.results && Array.isArray(dataR.results)) {
+        const mappedFlags: RedFlag[] = dataR.results.map((item: any) => {
+          let uiStatus: RedFlag['status'] = 'Open';
+          if (item.status === 'OPEN') uiStatus = 'Open';
+          else if (item.status === 'CONTAINED') uiStatus = 'Contained';
+          else if (item.status === 'IN_PROGRESS') uiStatus = 'In-Progress';
+          else if (item.status === 'UNDER_SUSTENANCE') uiStatus = 'Under-Sustenance';
+          else if (item.status === 'CLOSED') uiStatus = 'Closed';
+
+          return {
+            id: String(item.id),
+            srNo: String(item.srNo),
+            raisedDate: item.raisedAt ? item.raisedAt.split('T')[0] : '',
+            raisedBy: item.raisedByName,
+            raisedByDepartment: item.raisedByDepartmentName || item.raisedByDepartmentCode,
+            raisedByRole: item.raisedByRole,
+            mfName: item.plantCode || 'MF1',
+            lineAreaName: item.lineName,
+            modelName: item.modelName,
+            stationName: item.stationName,
+            redFlagNo: item.rfNo,
+            status: uiStatus,
+            redFlagType: item.redFlagType || 'Quality',
+            redFlagSubType: item.redFlagSubtype || '',
+            severity: (item.severity === 'CRITICAL' ? 'Critical (Line Stop)' : item.severity === 'MAJOR' ? 'Major (Quarantine)' : 'Minor (Observation)') as any,
+            category5M: item.category5M || 'Method',
+            responsibleDepartment: item.targetDepartmentName || item.targetDepartmentCode,
+            targetDepartment: item.targetDepartmentName || item.targetDepartmentCode,
+            targetPerson: item.targetPerson,
+            redFlagDescription: item.description,
+            evidencePhoto: item.thumbnailUrl || '',
+            teamLeader: item.teamLeader,
+            repetitiveOccurrence: 'First Time' as const,
+            closureResponsibility: item.closureResponsibility,
+            qaCustodian: item.qaCustodianName || 'Suresh Kumar (QA)',
+            qaCustodianStatus: item.qaCustodianStatus as any,
+            containmentStatus: (item.containmentStatus === 'VERIFIED' ? 'Verified' : item.containmentStatus === 'CONTAINED' ? 'Contained' : 'Pending') as any,
+            suspectQtyQuarantined: item.qtyQuarantined,
+            containmentAction: item.containmentAction,
+            targetDate: item.targetDate || '',
+            sustenanceStartDate: item.sustenanceStartDate || undefined,
+            sustenanceAchieved: item.sustenanceAchieved,
+            createdAt: item.raisedAt,
+          };
+        });
+        mappedFlags.sort((a, b) => new Date(b.createdAt || b.raisedDate || 0).getTime() - new Date(a.createdAt || a.raisedDate || 0).getTime());
+        setRedFlags(mappedFlags);
+      } else if (dataR?.success && dataR?.data) {
+        const sorted = [...dataR.data].sort((a, b) => new Date(b.createdAt || b.raisedDate || 0).getTime() - new Date(a.createdAt || a.raisedDate || 0).getTime());
+        setRedFlags(sorted);
+      }
 
       const dataF = await safeFetchJson('/api/fivesaudits');
       if (dataF?.success && dataF?.data) setFiveSAudits(dataF.data);

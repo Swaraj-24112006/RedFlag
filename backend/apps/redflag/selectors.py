@@ -34,7 +34,7 @@ def calculate_containment_sla(flag: RedFlag) -> dict:
 def get_base_flags_queryset():
     """
     Returns an optimized base queryset with all foreign keys and active before-attachment prefetched.
-    Prevents N+1 database queries.
+    Prevents N+1 database queries. Always ordered by latest to oldest raised_at dates.
     """
     return (
         RedFlag.objects.select_related(
@@ -54,6 +54,7 @@ def get_base_flags_queryset():
             )
         )
         .filter(is_void=False)
+        .order_by("-raised_at", "-id")
     )
 
 

@@ -185,6 +185,8 @@ class AttachmentConfirmView(APIView):
 class RedFlagViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     filterset_class = RedFlagFilter
+    ordering = ["-raised_at", "-id"]
+    ordering_fields = ["raised_at", "severity", "status", "rf_no", "created_at"]
     http_method_names = ["get", "post", "patch", "delete"]
 
     def get_queryset(self):

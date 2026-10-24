@@ -210,7 +210,7 @@ export default function RedFlagSystem({
   // Convert API items to RedFlag format for backwards compatibility with sub-components
   const apiItemsAsRedFlags: RedFlag[] = useMemo(() => {
     if (!flagsQuery.data?.results) return [];
-    return flagsQuery.data.results.map((item: RedFlagListItem) => {
+    const mapped = flagsQuery.data.results.map((item: RedFlagListItem) => {
       // Map API status to UI status
       let uiStatus: RedFlag['status'] = 'Open';
       if (item.status === 'OPEN') uiStatus = 'Open';
@@ -242,7 +242,7 @@ export default function RedFlagSystem({
         redFlagDescription: item.description,
         evidencePhoto: item.thumbnailUrl || '',
         teamLeader: item.teamLeader,
-        repetitiveOccurrence: 'First Time',
+        repetitiveOccurrence: 'First Time' as const,
         closureResponsibility: item.closureResponsibility,
         qaCustodian: item.qaCustodianName || 'Suresh Kumar (QA)',
         qaCustodianStatus: item.qaCustodianStatus as any,
@@ -255,18 +255,32 @@ export default function RedFlagSystem({
         createdAt: item.raisedAt,
       };
     });
+
+    // Ensure strict latest to oldest chronological sorting
+    return mapped.sort((a, b) => {
+      const timeA = new Date(a.createdAt || a.raisedDate || 0).getTime();
+      const timeB = new Date(b.createdAt || b.raisedDate || 0).getTime();
+      return timeB - timeA;
+    });
   }, [flagsQuery.data?.results]);
 
-  // Active flags for Tracker Table / Cards
-  const activeFlagsForTracker = flagsQuery.data?.results ? apiItemsAsRedFlags : redFlags;
+  // Active flags for Tracker Table / Cards - always ordered latest to oldest dates
+  const activeFlagsForTracker = useMemo(() => {
+    const list = flagsQuery.data?.results ? apiItemsAsRedFlags : redFlags;
+    return [...list].sort((a, b) => {
+      const timeA = new Date(a.createdAt || a.raisedDate || 0).getTime();
+      const timeB = new Date(b.createdAt || b.raisedDate || 0).getTime();
+      return timeB - timeA;
+    });
+  }, [flagsQuery.data?.results, apiItemsAsRedFlags, redFlags]);
 
-  // Calculate Metrics
-  const totalFlags = redFlags.length;
-  const openCount = redFlags.filter(r => r.status === 'Open').length;
-  const containedCount = redFlags.filter(r => r.status === 'Contained').length;
-  const inProgressCount = redFlags.filter(r => r.status === 'In-Progress').length;
-  const underSustenanceCount = redFlags.filter(r => r.status === 'Under-Sustenance' || (r.sustenanceStartDate && !r.sustenanceAchieved)).length;
-  const closedCount = redFlags.filter(r => r.status === 'Closed' && r.sustenanceAchieved).length;
+  // Calculate Metrics from active tracker dataset
+  const totalFlags = activeFlagsForTracker.length;
+  const openCount = activeFlagsForTracker.filter(r => r.status === 'Open').length;
+  const containedCount = activeFlagsForTracker.filter(r => r.status === 'Contained').length;
+  const inProgressCount = activeFlagsForTracker.filter(r => r.status === 'In-Progress').length;
+  const underSustenanceCount = activeFlagsForTracker.filter(r => r.status === 'Under-Sustenance' || (r.sustenanceStartDate && !r.sustenanceAchieved)).length;
+  const closedCount = activeFlagsForTracker.filter(r => r.status === 'Closed' && r.sustenanceAchieved).length;
 
   // Presentation Mode Slides
   const presentationSlides: SlideItem[] = useMemo(() => [
@@ -331,7 +345,7 @@ export default function RedFlagSystem({
       badge: 'Defects & Containment',
       content: (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {redFlags.filter(r => r.status === 'Open' || r.status === 'Contained').slice(0, 4).map(rf => (
+          {activeFlagsForTracker.filter(r => r.status === 'Open' || r.status === 'Contained').slice(0, 4).map(rf => (
             <div key={rf.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
               <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                 <div className="flex items-center space-x-2">
@@ -402,7 +416,7 @@ export default function RedFlagSystem({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                  {redFlags.slice(0, 6).map(rf => (
+                  {activeFlagsForTracker.slice(0, 6).map(rf => (
                     <tr key={rf.id} className="hover:bg-slate-800/40">
                       <td className="p-3">
                         <span className="text-rose-400 font-bold block">{rf.redFlagNo}</span>
@@ -458,7 +472,7 @@ export default function RedFlagSystem({
             </h3>
             <div className="space-y-3 pt-2">
               {['Method', 'Machine', 'Material', 'Man', 'Measurement'].map(cat => {
-                const count = redFlags.filter(r => (r.category5M || 'Method') === cat).length;
+                const count = activeFlagsForTracker.filter(r => (r.category5M || 'Method') === cat).length;
                 const pct = totalFlags > 0 ? Math.round((count / totalFlags) * 100) : 0;
                 return (
                   <div key={cat} className="space-y-1">
@@ -499,7 +513,7 @@ export default function RedFlagSystem({
         </div>
       )
     }
-  ], [redFlags, totalFlags, openCount, underSustenanceCount, closedCount]);
+  ], [activeFlagsForTracker, totalFlags, openCount, underSustenanceCount, closedCount]);
 
   return (
     <div className="space-y-4 font-sans text-slate-900 animate-fade-in">
@@ -624,7 +638,7 @@ export default function RedFlagSystem({
       {/* TAB 1: ALL-COMBINATION DASHBOARD */}
       {activeTab === 'dashboard' && (
         <RedFlagDashboard 
-          redFlags={redFlags} 
+          redFlags={activeFlagsForTracker} 
           onSelectRedFlag={(rf) => setSelectedFlagForAction(rf)}
           onNavigateToTab={(tab) => {
             if (tab === 'form') setActiveTab('form');
@@ -692,7 +706,7 @@ export default function RedFlagSystem({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {redFlags.map((rf) => (
+                  {activeFlagsForTracker.map((rf) => (
                     <tr key={rf.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3">
                         <span className="font-mono font-bold text-rose-700 block">{rf.redFlagNo}</span>

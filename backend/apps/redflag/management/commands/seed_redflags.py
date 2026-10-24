@@ -77,9 +77,11 @@ class Command(BaseCommand):
             line = random.choice(lines) if lines else None
             station = random.choice(stations) if stations else None
 
-            days_ago = random.randint(0, 90)
-            hours_ago = random.randint(0, 23)
-            raised_at = now - timedelta(days=days_ago, hours=hours_ago)
+            # Distribute chronologically so newer numbers are recent, down to 90 days ago
+            base_days = (count - 1 - i) * 90 // max(count, 1)
+            hours_jitter = random.randint(0, 23)
+            minutes_jitter = random.randint(0, 59)
+            raised_at = now - timedelta(days=base_days, hours=hours_jitter, minutes=minutes_jitter)
 
             qa_custodian_status = QaCustodianStatus.REVIEW_PENDING
             if status == RedFlagStatus.CLOSED:

@@ -18,7 +18,7 @@ urlpatterns = [
     path("api/masterdata/", include("apps.masterdata.urls", namespace="masterdata")),
 
     # RedFlag Domain Module (supports both /api/redflag/v1/ and /api/v1/redflag/)
-    path("api/redflag/v1/", include("apps.redflag.urls", namespace="redflag")),
+    path("api/redflag/v1/", include("apps.redflag.urls")),
     path("api/v1/redflag/", include("apps.redflag.urls")),
 
     # OpenAPI Schema & Swagger Documentation

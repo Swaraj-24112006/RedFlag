@@ -38,9 +38,9 @@ export default function RedFlagDashboard({ redFlags, onSelectRedFlag, onNavigate
   const [timeHorizon, setTimeHorizon] = useState<'all' | '7d' | '30d' | '90d'>('all');
   const [viewMode, setViewMode] = useState<'all' | 'matrix' | 'sustenance' | 'pareto'>('all');
 
-  // Filter computation
+  // Filter computation - guaranteed latest to oldest dates
   const filteredFlags = useMemo(() => {
-    return redFlags.filter(rf => {
+    const list = redFlags.filter(rf => {
       if (plantFilter !== 'ALL' && rf.mfName !== plantFilter) return false;
       if (originatorDeptFilter !== 'ALL' && rf.raisedByDepartment !== originatorDeptFilter) return false;
       if (targetDeptFilter !== 'ALL' && rf.targetDepartment !== targetDeptFilter) return false;
@@ -53,6 +53,12 @@ export default function RedFlagDashboard({ redFlags, onSelectRedFlag, onNavigate
         if (statusFilter === 'Closed' && rf.status !== 'Closed') return false;
       }
       return true;
+    });
+
+    return list.sort((a, b) => {
+      const timeA = new Date(a.createdAt || a.raisedDate || 0).getTime();
+      const timeB = new Date(b.createdAt || b.raisedDate || 0).getTime();
+      return timeB - timeA;
     });
   }, [redFlags, plantFilter, originatorDeptFilter, targetDeptFilter, category5MFilter, severityFilter, statusFilter, timeHorizon]);
 
