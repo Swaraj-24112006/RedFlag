@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AttachmentConfirmView,
+    AttachmentDirectUploadView,
     AttachmentPresignView,
     RedFlagViewSet,
 )
@@ -13,7 +14,8 @@ router = DefaultRouter()
 router.register(r"flags", RedFlagViewSet, basename="flags")
 
 urlpatterns = [
-    # Attachment flow (Phase 2)
+    # Attachment flow (Dual-mode: direct multipart upload & S3 presign)
+    path("attachments/upload/", AttachmentDirectUploadView.as_view(), name="attachment-upload"),
     path("attachments/presign/", AttachmentPresignView.as_view(), name="attachment-presign"),
     path("attachments/<int:pk>/confirm/", AttachmentConfirmView.as_view(), name="attachment-confirm"),
 

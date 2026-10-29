@@ -247,20 +247,12 @@ export default function App() {
 
   // Red Flags
   const handleAddRedFlag = async (rfData: Partial<RedFlag>) => {
-    try {
-      const res = await fetch('/api/redflags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(rfData)
-      });
-      const data = await res.json();
-      if (data.success) {
-        setRedFlags(prev => [data.data, ...prev]);
-        alert(`Red Flag raised on shopfloor! Serial Number: ${data.data.redFlagNo}. Under responsible team: ${data.data.responsibleDepartment}`);
-      }
-    } catch (err) {
-      console.error('Error raising Redflag:', err);
-    }
+    const newEntry = {
+      ...rfData,
+      id: rfData.id || `RF-${Date.now()}`,
+      redFlagNo: rfData.redFlagNo || `RF-${new Date().getFullYear()}-${String(redFlags.length + 1).padStart(4, "0")}`,
+    } as RedFlag;
+    setRedFlags(prev => [newEntry, ...prev]);
   };
 
   const handleUpdateRedFlag = async (id: string, rfData: Partial<RedFlag>) => {

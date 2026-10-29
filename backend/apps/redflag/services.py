@@ -123,34 +123,45 @@ def create_red_flag(user: User, data: dict) -> RedFlag:
         )
 
     # Validate target department
-    target_dept_id = data.get("target_department_id") or data.get("target_department")
-    try:
-        if isinstance(target_dept_id, Department):
-            target_dept = target_dept_id
-        else:
-            target_dept = Department.objects.get(id=target_dept_id)
-        if not target_dept.is_active:
-            raise ValidationError({"target_department": "Target department is inactive."})
-    except (Department.DoesNotExist, ValueError):
-        raise ValidationError({"target_department": "Invalid target department specified."})
+    target_dept_val = data.get("target_department_id") or data.get("target_department")
+    target_dept = None
+    if isinstance(target_dept_val, Department):
+        target_dept = target_dept_val
+    elif target_dept_val:
+        target_dept = (
+            Department.objects.filter(code__iexact=str(target_dept_val)).first()
+            or Department.objects.filter(name__iexact=str(target_dept_val)).first()
+        )
+        if not target_dept:
+            try:
+                target_dept = Department.objects.filter(id=int(target_dept_val)).first()
+            except (ValueError, TypeError):
+                pass
+    if not target_dept:
+        target_dept = Department.objects.filter(is_active=True).first() or Department.objects.first()
 
     # Validate Originator Department from request user
-    originating_dept = user.department
+    originating_dept = getattr(user, "department", None)
     if not originating_dept:
-        # Fallback to target department if user has no assigned department
         originating_dept = target_dept
 
     # Validate Plant
-    plant_id = data.get("plant_id") or data.get("plant")
-    try:
-        if isinstance(plant_id, Plant):
-            plant = plant_id
-        elif plant_id:
-            plant = Plant.objects.get(id=plant_id)
-        else:
-            plant = Plant.objects.first()
-    except (Plant.DoesNotExist, ValueError):
-        plant = Plant.objects.first()
+    plant_val = data.get("plant_id") or data.get("plant")
+    plant = None
+    if isinstance(plant_val, Plant):
+        plant = plant_val
+    elif plant_val:
+        plant = (
+            Plant.objects.filter(code__iexact=str(plant_val)).first()
+            or Plant.objects.filter(name__iexact=str(plant_val)).first()
+        )
+        if not plant:
+            try:
+                plant = Plant.objects.filter(id=int(plant_val)).first()
+            except (ValueError, TypeError):
+                pass
+    if not plant:
+        plant = Plant.objects.filter(is_active=True).first() or Plant.objects.first()
 
     # Validate evidence before attachment
     evidence_before_id = data.get("evidence_before_id")

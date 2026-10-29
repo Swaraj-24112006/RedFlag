@@ -228,37 +228,40 @@ export default function RedFlagSheetForm({ onAddRedFlag, onCancel, onNavigateToT
       }
     }
 
-    // Call Phase 2 Backend Creation Endpoint
-    if (beforeId) {
-      try {
-        await createRedFlag({
-          targetDepartment: mapDeptToCode(targetDepartment),
-          targetPerson,
-          lineName: lineAreaName,
-          stationName,
-          modelName,
-          plant: mfName,
-          redFlagType,
-          redFlagSubtype: redFlagSubType,
-          severity: mapSeverityToApi(severity),
-          category5M,
-          repetitiveOccurrence: (repetitiveOccurrence.includes('Repeat') || repetitiveOccurrence.includes('Frequent')),
-          description: redFlagDescription,
-          qtyQuarantined: Number(suspectQtyQuarantined) || 0,
-          containmentAction,
-          evidenceBeforeId: beforeId,
-          containmentAfterId: afterId || undefined,
-          targetDate: targetDate || undefined,
-        });
+    // Call Backend Creation Endpoint
+    let createdRf: any = null;
+    try {
+      createdRf = await createRedFlag({
+        targetDepartment: mapDeptToCode(targetDepartment),
+        targetPerson,
+        lineName: lineAreaName,
+        stationName,
+        modelName,
+        plant: mfName,
+        redFlagType,
+        redFlagSubtype: redFlagSubType,
+        severity: mapSeverityToApi(severity),
+        category5M,
+        repetitiveOccurrence: (repetitiveOccurrence.includes('Repeat') || repetitiveOccurrence.includes('Frequent')),
+        description: redFlagDescription,
+        qtyQuarantined: Number(suspectQtyQuarantined) || 0,
+        containmentAction,
+        evidenceBeforeId: beforeId || undefined,
+        containmentAfterId: afterId || undefined,
+        targetDate: targetDate || undefined,
+      });
 
-        queryClient.invalidateQueries({ queryKey: ['redflags'] });
-        queryClient.invalidateQueries({ queryKey: ['redflags-summary'] });
-      } catch (apiErr: any) {
-        console.error('API create red flag error:', apiErr);
-      }
+      queryClient.invalidateQueries({ queryKey: ['redflags'] });
+      queryClient.invalidateQueries({ queryKey: ['redflags-summary'] });
+    } catch (apiErr: any) {
+      console.error('API create red flag error:', apiErr);
     }
 
     setIsSubmitting(false);
+
+    if (createdRf) {
+      alert(`Red Flag raised on shopfloor! Serial Number: ${createdRf.rfNo}. Assigned to: ${createdRf.targetDepartmentCode || targetDepartment}`);
+    }
 
     onAddRedFlag({
       raisedBy,

@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from apps.common.storage import (
     generate_presigned_get,
+    get_file_url,
 )
 
 from .models import (
@@ -60,19 +61,14 @@ class AttachmentSerializer(serializers.ModelSerializer):
 
     def get_url(self, obj):
         if obj.status == AttachmentStatus.UPLOADED and obj.object_key:
-            try:
-                return generate_presigned_get(obj.object_key, ttl_seconds=600)
-            except Exception:
-                return None
+            return get_file_url(obj.object_key)
         return None
 
     def get_thumbnail_url(self, obj):
         key = obj.thumbnail_key or obj.object_key
         if obj.status == AttachmentStatus.UPLOADED and key:
-            try:
-                return generate_presigned_get(key, ttl_seconds=600)
-            except Exception:
-                return None
+            return get_file_url(key)
+        return None
         return None
 
 
@@ -208,10 +204,7 @@ class RedFlagListSerializer(serializers.ModelSerializer):
         if ev_list and len(ev_list) > 0:
             att = ev_list[0]
             key = att.thumbnail_key or att.object_key
-            try:
-                return generate_presigned_get(key, ttl_seconds=600)
-            except Exception:
-                return None
+            return get_file_url(key)
         return None
 
     def get_containment_sla_minutes(self, obj):

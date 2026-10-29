@@ -122,9 +122,11 @@ REST_FRAMEWORK = {
 }
 
 # SimpleJWT Configuration
+access_token_lifetime_minutes = int(os.environ.get("ACCESS_TOKEN_LIFETIME_MINUTES", 120))
+refresh_token_lifetime_days = int(os.environ.get("REFRESH_TOKEN_LIFETIME_DAYS", 7))
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=8),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=access_token_lifetime_minutes),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=refresh_token_lifetime_days),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": False,
     "ALGORITHM": "HS256",
@@ -139,7 +141,7 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173"
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://localhost:5174"
     ).split(",")
     if origin.strip()
 ]
@@ -154,13 +156,30 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # MinIO / S3 Configuration
-MINIO_ENDPOINT_INTERNAL = os.environ.get("MINIO_ENDPOINT_INTERNAL", "http://localhost:9000")
-MINIO_PUBLIC_ENDPOINT = os.environ.get("MINIO_PUBLIC_ENDPOINT", "http://localhost:9000")
+raw_minio_ep = os.environ.get("MINIO_ENDPOINT") or os.environ.get("MINIO_ENDPOINT_INTERNAL", "localhost:9000")
+if not raw_minio_ep.startswith("http://") and not raw_minio_ep.startswith("https://"):
+    minio_url = f"http://{raw_minio_ep}"
+else:
+    minio_url = raw_minio_ep
+
+MINIO_ENDPOINT_INTERNAL = os.environ.get("MINIO_ENDPOINT_INTERNAL") or minio_url
+MINIO_PUBLIC_ENDPOINT = os.environ.get("MINIO_PUBLIC_ENDPOINT") or minio_url
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET_NAME = os.environ.get("MINIO_BUCKET_NAME", "redflag-evidence")
-MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
+MINIO_BUCKET_NAME = os.environ.get("MINIO_BUCKET_NAME", "kaizenimages")
+MINIO_SECURE = (
+    os.environ.get("MINIO_USE_HTTPS", "False").lower() == "true"
+    or os.environ.get("MINIO_SECURE", "false").lower() == "true"
+)
 MINIO_REGION = os.environ.get("MINIO_REGION", "us-east-1")
+
+# Email Settings
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() == "true"
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "KSPG Cockpit <no-reply@kspg.com>")
 
 # Spectacular API Docs Configuration
 SPECTACULAR_SETTINGS = {

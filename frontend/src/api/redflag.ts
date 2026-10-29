@@ -423,7 +423,32 @@ export async function uploadAttachmentFile(
   file: File,
   kind: 'EVIDENCE_BEFORE' | 'CONTAINMENT_AFTER' | 'OTHER'
 ): Promise<{ id: number; url: string | null; thumbnailUrl: string | null }> {
-  // 1. Request presigned upload
+  // 1. Direct Dual-mode upload to backend
+  // Backend gives first preference to MinIO S3; if MinIO is offline, transparently falls back to local media
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('kind', kind);
+
+    const uploadRes = await authFetch('/api/redflag/v1/attachments/upload/', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (uploadRes.ok) {
+      const data = await uploadRes.json();
+      const att = data.attachment;
+      return {
+        id: att.id,
+        url: att.url || null,
+        thumbnailUrl: att.thumbnailUrl || null,
+      };
+    }
+  } catch (directErr) {
+    console.warn('Direct upload attempt error, falling back to presigned flow:', directErr);
+  }
+
+  // 2. Presigned MinIO direct flow (fallback)
   const presignRes = await authFetch('/api/redflag/v1/attachments/presign/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -444,27 +469,31 @@ export async function uploadAttachmentFile(
   const attachmentId = presignData.attachmentId || presignData.attachment_id;
   const presignedPost = presignData.presignedPost || presignData.presigned_post;
 
-  // 2. Direct upload to MinIO via S3 presigned POST
+  // Direct upload to MinIO via S3 presigned POST if MinIO is up and presigned URL returned
   if (presignedPost?.url) {
-    const formData = new FormData();
-    if (presignedPost.fields) {
-      for (const [key, val] of Object.entries(presignedPost.fields)) {
-        formData.append(key, val as string);
+    try {
+      const formData = new FormData();
+      if (presignedPost.fields) {
+        for (const [key, val] of Object.entries(presignedPost.fields)) {
+          formData.append(key, val as string);
+        }
       }
-    }
-    formData.append('file', file);
+      formData.append('file', file);
 
-    const s3Res = await fetch(presignedPost.url, {
-      method: 'POST',
-      body: formData,
-    });
+      const s3Res = await fetch(presignedPost.url, {
+        method: 'POST',
+        body: formData,
+      });
 
-    if (!s3Res.ok && s3Res.status !== 204 && s3Res.status !== 200) {
-      throw new Error(`MinIO S3 upload failed with status ${s3Res.status}`);
+      if (!s3Res.ok && s3Res.status !== 204 && s3Res.status !== 200) {
+        throw new Error(`MinIO S3 upload failed with status ${s3Res.status}`);
+      }
+    } catch (s3Err) {
+      console.warn('MinIO S3 upload error:', s3Err);
     }
   }
 
-  // 3. Confirm upload with backend (sniff bytes and generate ~400px thumbnail)
+  // Confirm upload with backend
   const confirmRes = await authFetch(`/api/redflag/v1/attachments/${attachmentId}/confirm/`, {
     method: 'POST',
   });
@@ -502,7 +531,7 @@ export interface RedFlagCreatePayload {
   suspectQtyQuarantined?: number;
   containmentAction?: string;
   redTagNo?: string;
-  evidenceBeforeId: number;
+  evidenceBeforeId?: number | null;
   containmentAfterId?: number | null;
   targetDate?: string;
 }

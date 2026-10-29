@@ -1,6 +1,7 @@
 import csv
 import os
 import uuid
+import logging
 from io import BytesIO
 
 from django.http import StreamingHttpResponse
@@ -17,13 +18,19 @@ from rest_framework.views import APIView
 from apps.accounts.models import Role
 from apps.common.storage import (
     generate_presigned_post,
+    get_file_bytes_dual,
     get_object_bytes,
     head_object,
+    is_minio_available,
     put_object_bytes,
+    save_file_dual,
 )
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     Attachment,
+    AttachmentKind,
     AttachmentStatus,
 )
 from .selectors import (
@@ -70,8 +77,72 @@ def sanitize_csv_cell(value) -> str:
 
 
 # ----------------------------------------------------------------------
-# MinIO S3 Direct Attachment Flow (Phase 2)
+# Dual-Mode Attachment Flow (MinIO first preference, Local Media fallback)
 # ----------------------------------------------------------------------
+
+class AttachmentDirectUploadView(APIView):
+    """
+    POST /api/redflag/v1/attachments/upload/
+    Accepts multipart/form-data upload with 'file' and 'kind'.
+    - First preference: MinIO S3 object storage.
+    - Graceful fallback: local disk storage (settings.MEDIA_ROOT) when MinIO is down.
+    Generates ~400px thumbnail and returns uploaded attachment.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        file_obj = request.FILES.get("file")
+        if not file_obj:
+            return Response({"error": "No file provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        kind = request.data.get("kind", AttachmentKind.EVIDENCE_BEFORE)
+        if kind not in AttachmentKind.values:
+            kind = AttachmentKind.EVIDENCE_BEFORE
+
+        year = timezone.now().year
+        ext = os.path.splitext(file_obj.name)[1].lower() or ".jpg"
+        object_key = f"redflag/{year}/{uuid.uuid4()}{ext}"
+        content_type = file_obj.content_type or "image/jpeg"
+        file_bytes = file_obj.read()
+        file_size = len(file_bytes)
+
+        # Generate thumbnail
+        thumb_key = f"redflag/{year}/thumb_{uuid.uuid4()}.jpg"
+        thumb_bytes = None
+        try:
+            img = Image.open(BytesIO(file_bytes))
+            img.thumbnail((400, 400))
+            thumb_io = BytesIO()
+            img_format = "JPEG" if img.format not in ["PNG", "WEBP"] else img.format
+            img.convert("RGB").save(thumb_io, format=img_format, quality=85)
+            thumb_bytes = thumb_io.getvalue()
+        except Exception as e:
+            logger.warning(f"Failed to generate thumbnail: {e}")
+
+        # Dual save (MinIO first, local fallback)
+        save_res = save_file_dual(object_key, file_bytes, content_type)
+        if thumb_bytes:
+            save_file_dual(thumb_key, thumb_bytes, "image/jpeg")
+
+        attachment = Attachment.objects.create(
+            kind=kind,
+            object_key=object_key,
+            thumbnail_key=thumb_key if thumb_bytes else "",
+            content_type=content_type,
+            size=file_size,
+            status=AttachmentStatus.UPLOADED,
+            uploaded_by=request.user,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "storage": save_res.get("storage", "local"),
+                "attachment": AttachmentSerializer(attachment).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
 
 class AttachmentPresignView(APIView):
     """
@@ -100,17 +171,25 @@ class AttachmentPresignView(APIView):
             uploaded_by=request.user,
         )
 
-        presigned_post = generate_presigned_post(
-            object_key=object_key,
-            content_type=data["content_type"],
-            max_size_bytes=data["size"] + 1024 * 1024,
-        )
+        minio_up = False
+        try:
+            presigned_post = generate_presigned_post(
+                object_key=object_key,
+                content_type=data["content_type"],
+                max_size_bytes=data["size"] + 1024 * 1024,
+            )
+            minio_up = True
+        except Exception as e:
+            logger.info(f"MinIO presigned post unavailable: {e}")
+            presigned_post = {"url": "", "fields": {}}
 
         return Response(
             {
                 "attachment_id": attachment.id,
                 "object_key": object_key,
+                "minio_available": minio_up,
                 "presigned_post": presigned_post,
+                "direct_upload_url": "/api/redflag/v1/attachments/upload/",
             },
             status=status.HTTP_201_CREATED,
         )
@@ -119,7 +198,8 @@ class AttachmentPresignView(APIView):
 class AttachmentConfirmView(APIView):
     """
     POST /api/redflag/v1/attachments/{id}/confirm/
-    Verifies that the file was uploaded to MinIO, sniffs image bytes, and generates a ~400px thumbnail.
+    Verifies that the file was uploaded, sniffs image bytes, and generates a ~400px thumbnail.
+    Works for both MinIO and local disk storage.
     """
     permission_classes = [IsAuthenticated]
 
@@ -129,18 +209,11 @@ class AttachmentConfirmView(APIView):
         except Attachment.DoesNotExist:
             return Response({"error": "Attachment not found or unauthorized."}, status=status.HTTP_404_NOT_FOUND)
 
+        actual_size = attachment.size
+        # Download bytes to verify and thumbnail (from MinIO or local)
         try:
-            head = head_object(attachment.object_key)
-            actual_size = head.get("ContentLength", 0)
-        except Exception as e:
-            return Response(
-                {"error": f"Uploaded object not found in MinIO storage: {e}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Download bytes to verify and thumbnail
-        try:
-            img_bytes = get_object_bytes(attachment.object_key)
+            img_bytes = get_file_bytes_dual(attachment.object_key)
+            actual_size = len(img_bytes)
             img = Image.open(BytesIO(img_bytes))
             img.verify()  # Sniff valid image format
 
@@ -152,10 +225,10 @@ class AttachmentConfirmView(APIView):
             img.convert("RGB").save(thumb_io, format=img_format, quality=85)
             thumb_data = thumb_io.getvalue()
 
-            # Upload thumbnail
+            # Upload thumbnail via dual save
             year = timezone.now().year
             thumb_key = f"redflag/{year}/thumb_{uuid.uuid4()}.jpg"
-            put_object_bytes(thumb_key, thumb_data, content_type="image/jpeg")
+            save_file_dual(thumb_key, thumb_data, content_type="image/jpeg")
 
             attachment.size = actual_size
             attachment.thumbnail_key = thumb_key
@@ -170,6 +243,7 @@ class AttachmentConfirmView(APIView):
                 status=status.HTTP_200_OK,
             )
         except Exception as e:
+            logger.warning(f"Attachment confirm error: {e}")
             attachment.status = AttachmentStatus.FAILED
             attachment.save(update_fields=["status"])
             return Response(

@@ -7,21 +7,21 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 # Database configuration: env-driven with SQLite fallback for quick local evaluation
-POSTGRES_DB = os.environ.get("POSTGRES_DB")
-POSTGRES_USER = os.environ.get("POSTGRES_USER")
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD")
-POSTGRES_HOST = os.environ.get("POSTGRES_HOST")
-POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
+DB_NAME = os.environ.get("DATABASE_NAME") or os.environ.get("POSTGRES_DB")
+DB_USER = os.environ.get("DATABASE_USER") or os.environ.get("POSTGRES_USER")
+DB_PASSWORD = os.environ.get("DATABASE_PASSWORD") or os.environ.get("POSTGRES_PASSWORD")
+DB_HOST = os.environ.get("DATABASE_HOST") or os.environ.get("POSTGRES_HOST") or "localhost"
+DB_PORT = os.environ.get("DATABASE_PORT") or os.environ.get("POSTGRES_PORT", "5432")
 
-if POSTGRES_DB and POSTGRES_USER:
+if DB_NAME and DB_USER:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
-            "NAME": POSTGRES_DB,
-            "USER": POSTGRES_USER,
-            "PASSWORD": POSTGRES_PASSWORD,
-            "HOST": POSTGRES_HOST or "localhost",
-            "PORT": POSTGRES_PORT,
+            "NAME": DB_NAME,
+            "USER": DB_USER,
+            "PASSWORD": DB_PASSWORD,
+            "HOST": DB_HOST,
+            "PORT": DB_PORT,
         }
     }
 else:
